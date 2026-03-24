@@ -2,6 +2,9 @@
 name = "omniget-plugin-courses"
 version = "0.1.0"
 edition = "2021"
+[lib]
+crate-type = ["cdylib"]
+
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -31,7 +34,7 @@ base64 = "0.22.1"
 sha2 = "0.10"
 filetime = "0.2.27"
 tauri-plugin-store = "2"
-omniget-core = { path = "../omniget-core", features = ["desktop"] }
+omniget-core = { git = "https://github.com/tonhowtf/omniget", path = "src-tauri/omniget-core", features = ["desktop"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
