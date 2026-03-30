@@ -1,7 +1,7 @@
 <script lang="ts">
   import { pluginInvoke } from "$lib/plugin-invoke";
   import { open } from "@tauri-apps/plugin-dialog";
-  import CourseCard from "../components/hotmart/CourseCard.svelte";
+  import CourseCard from "../../components/hotmart/CourseCard.svelte";
   import { showToast } from "$lib/stores/toast-store.svelte";
   import { getDownloads } from "$lib/stores/download-store.svelte";
   import { getSettings } from "$lib/stores/settings-store.svelte";
