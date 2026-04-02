@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use tauri::Emitter;
+
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -29,7 +29,7 @@ pub struct ThinkificCourseDownloadProgress {
 }
 
 pub async fn download_full_course(
-    app: &tauri::AppHandle,
+    host: &std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
     session: &ThinkificSession,
     course: &ThinkificCourse,
     output_dir: &str,
@@ -61,9 +61,8 @@ pub async fn download_full_course(
     let total_bytes = Arc::new(AtomicU64::new(0));
     let completed = Arc::new(AtomicUsize::new(0));
 
-    let _ = app.emit(
-        "download-progress",
-        &ThinkificCourseDownloadProgress {
+    let _ = host.emit_event(
+        "download-progress", serde_json::to_value(&ThinkificCourseDownloadProgress {
             course_id: course.id.clone(),
             course_name: course.name.clone(),
             percent: 0.0,
@@ -74,8 +73,7 @@ pub async fn download_full_course(
             completed_lessons: 0,
             total_modules: total_modules as u32,
             current_module_index: 0,
-        },
-    );
+        },).unwrap_or_default());
 
     for (mi, module) in modules.iter().enumerate() {
         if cancel_token.is_cancelled() {
@@ -103,9 +101,8 @@ pub async fn download_full_course(
                         e
                     );
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = app.emit(
-                        "download-progress",
-                        &ThinkificCourseDownloadProgress {
+                    let _ = host.emit_event(
+                        "download-progress", serde_json::to_value(&ThinkificCourseDownloadProgress {
                             course_id: course.id.clone(),
                             course_name: course.name.clone(),
                             percent: done as f64 / total_lessons as f64 * 100.0,
@@ -116,8 +113,7 @@ pub async fn download_full_course(
                             completed_lessons: done as u32,
                             total_modules: total_modules as u32,
                             current_module_index: (mi + 1) as u32,
-                        },
-                    );
+                        },).unwrap_or_default());
                     continue;
                 }
             };
@@ -131,9 +127,8 @@ pub async fn download_full_course(
                         if meta.map(|m| m.len() > 0).unwrap_or(false) {
                             tracing::info!("[thinkific] Skipping existing: {}", video_path);
                             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                            let _ = app.emit(
-                                "download-progress",
-                                &ThinkificCourseDownloadProgress {
+                            let _ = host.emit_event(
+                                "download-progress", serde_json::to_value(&ThinkificCourseDownloadProgress {
                                     course_id: course.id.clone(),
                                     course_name: course.name.clone(),
                                     percent: done as f64 / total_lessons as f64 * 100.0,
@@ -144,8 +139,7 @@ pub async fn download_full_course(
                                     completed_lessons: done as u32,
                                     total_modules: total_modules as u32,
                                     current_module_index: (mi + 1) as u32,
-                                },
-                            );
+                                },).unwrap_or_default());
                             continue;
                         }
                     }
@@ -210,9 +204,8 @@ pub async fn download_full_course(
             }
 
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            let _ = app.emit(
-                "download-progress",
-                &ThinkificCourseDownloadProgress {
+            let _ = host.emit_event(
+                "download-progress", serde_json::to_value(&ThinkificCourseDownloadProgress {
                     course_id: course.id.clone(),
                     course_name: course.name.clone(),
                     percent: done as f64 / total_lessons as f64 * 100.0,
@@ -223,8 +216,7 @@ pub async fn download_full_course(
                     completed_lessons: done as u32,
                     total_modules: total_modules as u32,
                     current_module_index: (mi + 1) as u32,
-                },
-            );
+                },).unwrap_or_default());
         }
     }
 

@@ -2,12 +2,11 @@
 name = "omniget-plugin-courses"
 version = "0.1.0"
 edition = "2021"
-[lib]
-crate-type = ["cdylib"]
 
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "stream", "http2", "gzip", "brotli", "deflate", "rustls-tls", "socks"] }
 futures = "0.3"
@@ -33,8 +32,8 @@ urlencoding = "2"
 base64 = "0.22.1"
 sha2 = "0.10"
 filetime = "0.2.27"
-tauri-plugin-store = "2"
 omniget-core = { git = "https://github.com/tonhowtf/omniget", features = ["desktop"] }
+omniget-plugin-sdk = { git = "https://github.com/tonhowtf/omniget" }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

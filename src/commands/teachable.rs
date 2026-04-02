@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::Emitter;
+
 use tokio_util::sync::CancellationToken;
 
 use crate::platforms::teachable::api::{self, TeachableCourse, TeachableSession};
 use crate::platforms::teachable::downloader;
-use crate::state::CoursesState;
+
 
 const SESSION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 const COURSES_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -18,7 +18,7 @@ struct TeachableDownloadCompleteEvent {
     error: Option<String>,
 }
 
-#[tauri::command]
+
 pub async fn teachable_request_otp(
     email: String,
 ) -> Result<(), String> {
@@ -27,23 +27,23 @@ pub async fn teachable_request_otp(
         .map_err(|e| format!("OTP request failed: {}", e))
 }
 
-#[tauri::command]
+
 pub async fn teachable_verify_otp(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     email: String,
     otp_code: String,
 ) -> Result<String, String> {
     let _ = api::delete_saved_session().await;
-    state.teachable_session.lock().await.take();
-    *state.teachable_session_validated_at.lock().await = None;
-    *state.teachable_courses_cache.lock().await = None;
+    plugin.teachable_session.lock().await.take();
+    *plugin.teachable_session_validated_at.lock().await = None;
+    *plugin.teachable_courses_cache.lock().await = None;
 
     match api::verify_otp(&email, &otp_code).await {
         Ok(session) => {
             let _ = api::save_session(&session).await;
-            let mut guard = state.teachable_session.lock().await;
+            let mut guard = plugin.teachable_session.lock().await;
             *guard = Some(session);
-            *state.teachable_session_validated_at.lock().await = Some(Instant::now());
+            *plugin.teachable_session_validated_at.lock().await = Some(Instant::now());
             Ok("authenticated".to_string())
         }
         Err(e) => {
@@ -53,15 +53,15 @@ pub async fn teachable_verify_otp(
     }
 }
 
-#[tauri::command]
+
 pub async fn teachable_login_token(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     token: String,
 ) -> Result<String, String> {
     let _ = api::delete_saved_session().await;
-    state.teachable_session.lock().await.take();
-    *state.teachable_session_validated_at.lock().await = None;
-    *state.teachable_courses_cache.lock().await = None;
+    plugin.teachable_session.lock().await.take();
+    *plugin.teachable_session_validated_at.lock().await = None;
+    *plugin.teachable_courses_cache.lock().await = None;
 
     let parsed_token = omniget_core::core::cookie_parser::parse_bearer_input(&token);
 
@@ -90,9 +90,9 @@ pub async fn teachable_login_token(
     match api::validate_token(&session).await {
         Ok(true) => {
             let _ = api::save_session(&session).await;
-            let mut guard = state.teachable_session.lock().await;
+            let mut guard = plugin.teachable_session.lock().await;
             *guard = Some(session);
-            *state.teachable_session_validated_at.lock().await = Some(Instant::now());
+            *plugin.teachable_session_validated_at.lock().await = Some(Instant::now());
             Ok("authenticated".to_string())
         }
         Ok(false) => Err("Invalid token".to_string()),
@@ -100,16 +100,16 @@ pub async fn teachable_login_token(
     }
 }
 
-#[tauri::command]
+
 pub async fn teachable_check_session(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<String, String> {
-    let has_memory_session = state.teachable_session.lock().await.is_some();
+    let has_memory_session = plugin.teachable_session.lock().await.is_some();
 
     if !has_memory_session {
         match api::load_session().await {
             Ok(Some(session)) => {
-                let mut guard = state.teachable_session.lock().await;
+                let mut guard = plugin.teachable_session.lock().await;
                 *guard = Some(session);
             }
             Ok(None) => {
@@ -121,13 +121,13 @@ pub async fn teachable_check_session(
         }
     }
 
-    let guard = state.teachable_session.lock().await;
+    let guard = plugin.teachable_session.lock().await;
     let _session = guard
         .as_ref()
         .ok_or_else(|| "not_authenticated".to_string())?;
 
     {
-        let validated_at = state.teachable_session_validated_at.lock().await;
+        let validated_at = plugin.teachable_session_validated_at.lock().await;
         if let Some(at) = *validated_at {
             if at.elapsed() < SESSION_COOLDOWN {
                 return Ok("authenticated".to_string());
@@ -140,13 +140,13 @@ pub async fn teachable_check_session(
 
     match api::validate_token(&session_clone).await {
         Ok(true) => {
-            *state.teachable_session_validated_at.lock().await = Some(Instant::now());
+            *plugin.teachable_session_validated_at.lock().await = Some(Instant::now());
             Ok("authenticated".to_string())
         }
         Ok(false) => {
-            state.teachable_session.lock().await.take();
-            *state.teachable_session_validated_at.lock().await = None;
-            *state.teachable_courses_cache.lock().await = None;
+            plugin.teachable_session.lock().await.take();
+            *plugin.teachable_session_validated_at.lock().await = None;
+            *plugin.teachable_courses_cache.lock().await = None;
             let _ = api::delete_saved_session().await;
             Err("session_expired".to_string())
         }
@@ -154,23 +154,23 @@ pub async fn teachable_check_session(
     }
 }
 
-#[tauri::command]
+
 pub async fn teachable_logout(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<(), String> {
     let _ = api::delete_saved_session().await;
-    state.teachable_session.lock().await.take();
-    *state.teachable_session_validated_at.lock().await = None;
-    *state.teachable_courses_cache.lock().await = None;
+    plugin.teachable_session.lock().await.take();
+    *plugin.teachable_session_validated_at.lock().await = None;
+    *plugin.teachable_courses_cache.lock().await = None;
     Ok(())
 }
 
-#[tauri::command]
+
 pub async fn teachable_set_school(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     school_id: String,
 ) -> Result<(), String> {
-    let mut guard = state.teachable_session.lock().await;
+    let mut guard = plugin.teachable_session.lock().await;
     let session = guard
         .as_mut()
         .ok_or_else(|| "Not authenticated".to_string())?;
@@ -179,11 +179,11 @@ pub async fn teachable_set_school(
     Ok(())
 }
 
-#[tauri::command]
+
 pub async fn teachable_list_schools(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<api::TeachableSchool>, String> {
-    let guard = state.teachable_session.lock().await;
+    let guard = plugin.teachable_session.lock().await;
     let session = guard
         .as_ref()
         .ok_or_else(|| "Not authenticated. Please log in first.".to_string())?;
@@ -194,9 +194,9 @@ pub async fn teachable_list_schools(
 }
 
 async fn fetch_teachable_courses(
-    state: &tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<TeachableCourse>, String> {
-    let guard = state.teachable_session.lock().await;
+    let guard = plugin.teachable_session.lock().await;
     let session = guard
         .as_ref()
         .ok_or_else(|| "Not authenticated. Please log in first.".to_string())?;
@@ -210,7 +210,7 @@ async fn fetch_teachable_courses(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut cache = state.teachable_courses_cache.lock().await;
+    let mut cache = plugin.teachable_courses_cache.lock().await;
     *cache = Some(crate::state::TeachableCoursesCache {
         courses: courses.clone(),
         fetched_at: Instant::now(),
@@ -219,12 +219,12 @@ async fn fetch_teachable_courses(
     Ok(courses)
 }
 
-#[tauri::command]
+
 pub async fn teachable_list_courses(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<TeachableCourse>, String> {
     {
-        let cache = state.teachable_courses_cache.lock().await;
+        let cache = plugin.teachable_courses_cache.lock().await;
         if let Some(ref cached) = *cache {
             if cached.fetched_at.elapsed() < COURSES_CACHE_TTL {
                 return Ok(cached.courses.clone());
@@ -232,24 +232,24 @@ pub async fn teachable_list_courses(
         }
     }
 
-    fetch_teachable_courses(&state).await
+    fetch_teachable_courses(&plugin).await
 }
 
-#[tauri::command]
+
 pub async fn teachable_refresh_courses(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<TeachableCourse>, String> {
     {
-        let mut cache = state.teachable_courses_cache.lock().await;
+        let mut cache = plugin.teachable_courses_cache.lock().await;
         *cache = None;
     }
-    fetch_teachable_courses(&state).await
+    fetch_teachable_courses(&plugin).await
 }
 
-#[tauri::command]
+
 pub async fn start_teachable_course_download(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, CoursesState>,
+    host: std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
+    plugin: &crate::CoursesPlugin,
     course_json: String,
     output_dir: String,
 ) -> Result<String, String> {
@@ -264,7 +264,7 @@ pub async fn start_teachable_course_download(
         course.id.hash(&mut hasher);
         hasher.finish()
     };
-    let active = state.active_downloads.clone();
+    let active = plugin.active_downloads.clone();
 
     let cancel_token = CancellationToken::new();
 
@@ -277,7 +277,7 @@ pub async fn start_teachable_course_download(
     }
 
     let session = {
-        let guard = state.teachable_session.lock().await;
+        let guard = plugin.teachable_session.lock().await;
         guard
             .as_ref()
             .ok_or_else(|| "Not authenticated. Please log in first.".to_string())?
@@ -286,7 +286,7 @@ pub async fn start_teachable_course_download(
 
     tokio::spawn(async move {
         let result =
-            downloader::download_full_course(&app, &session, &course, &output_dir, cancel_token)
+            downloader::download_full_course(&host, &session, &course, &output_dir, cancel_token)
                 .await;
 
         {
@@ -296,25 +296,21 @@ pub async fn start_teachable_course_download(
 
         match result {
             Ok(()) => {
-                let _ = app.emit(
-                    "download-complete",
-                    &TeachableDownloadCompleteEvent {
+                let _ = host.emit_event(
+                    "download-complete", serde_json::to_value(&TeachableDownloadCompleteEvent {
                         course_name: course.name,
                         success: true,
                         error: None,
-                    },
-                );
+                    },).unwrap_or_default());
             }
             Err(e) => {
                 tracing::error!("[teachable] download error for '{}': {}", course.name, e);
-                let _ = app.emit(
-                    "download-complete",
-                    &TeachableDownloadCompleteEvent {
+                let _ = host.emit_event(
+                    "download-complete", serde_json::to_value(&TeachableDownloadCompleteEvent {
                         course_name: course.name,
                         success: false,
                         error: Some(e.to_string()),
-                    },
-                );
+                    },).unwrap_or_default());
             }
         }
     });

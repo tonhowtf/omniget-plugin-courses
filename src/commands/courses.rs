@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
 use crate::platforms::hotmart::api::{self, Course, Module};
-use crate::state::{CoursesState, CoursesCache};
+use crate::state::CoursesCache;
 
 const COURSES_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
-async fn fetch_courses_from_api(state: &tauri::State<'_, CoursesState>) -> Result<Vec<Course>, String> {
-    let guard = state.hotmart_session.lock().await;
+async fn fetch_courses_from_api(plugin: &crate::CoursesPlugin) -> Result<Vec<Course>, String> {
+    let guard = plugin.hotmart_session.lock().await;
     let session = guard
         .as_ref()
         .ok_or_else(|| "Not authenticated. Please log in first.".to_string())?;
@@ -23,7 +23,7 @@ async fn fetch_courses_from_api(state: &tauri::State<'_, CoursesState>) -> Resul
         }
     }
 
-    let mut cache = state.courses_cache.lock().await;
+    let mut cache = plugin.courses_cache.lock().await;
     *cache = Some(CoursesCache {
         courses: courses.clone(),
         fetched_at: Instant::now(),
@@ -32,12 +32,12 @@ async fn fetch_courses_from_api(state: &tauri::State<'_, CoursesState>) -> Resul
     Ok(courses)
 }
 
-#[tauri::command]
+
 pub async fn hotmart_list_courses(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<Course>, String> {
     {
-        let cache = state.courses_cache.lock().await;
+        let cache = plugin.courses_cache.lock().await;
         if let Some(ref cached) = *cache {
             if cached.fetched_at.elapsed() < COURSES_CACHE_TTL {
                 return Ok(cached.courses.clone());
@@ -45,27 +45,27 @@ pub async fn hotmart_list_courses(
         }
     }
 
-    fetch_courses_from_api(&state).await
+    fetch_courses_from_api(&plugin).await
 }
 
-#[tauri::command]
+
 pub async fn hotmart_refresh_courses(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<Course>, String> {
     {
-        let mut cache = state.courses_cache.lock().await;
+        let mut cache = plugin.courses_cache.lock().await;
         *cache = None;
     }
-    fetch_courses_from_api(&state).await
+    fetch_courses_from_api(&plugin).await
 }
 
-#[tauri::command]
+
 pub async fn hotmart_get_modules(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     course_id: u64,
     slug: String,
 ) -> Result<Vec<Module>, String> {
-    let guard = state.hotmart_session.lock().await;
+    let guard = plugin.hotmart_session.lock().await;
     let session = guard
         .as_ref()
         .ok_or_else(|| "Not authenticated. Please log in first.".to_string())?;

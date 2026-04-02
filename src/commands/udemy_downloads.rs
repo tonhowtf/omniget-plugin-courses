@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::Emitter;
+
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::platforms::udemy::api::{self, UdemyCourse, UdemyCurriculum};
 use crate::platforms::udemy::downloader::UdemyDownloader;
-use crate::platforms::udemy::webview_api;
-use crate::state::CoursesState;
-use crate::settings_helper;
+
+
 
 #[derive(Clone, Serialize)]
 struct UdemyDownloadCompleteEvent {
@@ -20,81 +19,20 @@ struct UdemyDownloadCompleteEvent {
 }
 
 async fn fetch_curriculum_via_webview(
-    app: &tauri::AppHandle,
-    api_webview: &Arc<tokio::sync::Mutex<Option<tauri::WebviewWindow>>>,
-    result_store: &Arc<std::sync::Mutex<Option<String>>>,
-    course_id: u64,
-    portal_name: &str,
-) -> Result<UdemyCurriculum, String> {
-    let window = {
-        let mut wv_guard = api_webview.lock().await;
-        match &*wv_guard {
-            Some(w) => w.clone(),
-            None => {
-                let w = webview_api::ensure_api_webview(app, result_store, portal_name)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                *wv_guard = Some(w.clone());
-                w
-            }
-        }
-    };
-
-    let url = format!(
-        "https://{}.udemy.com/api-2.0/courses/{}/subscriber-curriculum-items/?fields[lecture]=title,object_index,asset,supplementary_assets&fields[quiz]=title,object_index,type&fields[practice]=title,object_index&fields[chapter]=title,object_index&fields[asset]=title,filename,asset_type,status,is_external,media_license_token,course_is_drmed,media_sources,captions,stream_urls,download_urls,external_url,body&page_size=200",
-        portal_name, course_id
-    );
-
-    tracing::info!("[udemy-api] fetching curriculum via webview for course {}", course_id);
-
-    let body = webview_api::webview_get(&window, &url, result_store)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut data: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let mut all_results = data.get("results")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    loop {
-        let next_url = data.get("next").and_then(|n| n.as_str()).map(|s| s.to_string());
-        match next_url {
-            Some(next) if !next.is_empty() => {
-                tracing::info!("[udemy-api] fetching next curriculum page via webview");
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-                let page_body = webview_api::webview_get(&window, &next, result_store)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                let page_data: serde_json::Value = serde_json::from_str(&page_body)
-                    .map_err(|e| format!("JSON parse error on page: {}", e))?;
-
-                if let Some(new_results) = page_data.get("results").and_then(|r| r.as_array()) {
-                    all_results.extend(new_results.iter().cloned());
-                }
-
-                data = page_data;
-            }
-            _ => break,
-        }
-    }
-
-    tracing::info!("[udemy-api] curriculum fetched: {} items total", all_results.len());
-
-    api::parse_curriculum(course_id, &all_results).map_err(|e| e.to_string())
+    _host: &std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
+    _course_id: u64,
+    _portal: &str,
+) -> Result<crate::platforms::udemy::api::UdemyCurriculum, String> {
+    Err("Webview curriculum fetch not available in plugin mode".into())
 }
 
 async fn fetch_curriculum_via_api(
-    state: &tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     course_id: u64,
     portal_name: &str,
 ) -> Result<UdemyCurriculum, String> {
     let client = {
-        let guard = state.udemy_session.lock().await;
+        let guard = plugin.udemy_session.lock().await;
         let session = guard.as_ref().ok_or("not_authenticated")?;
         session.client.clone()
     };
@@ -164,10 +102,10 @@ async fn fetch_curriculum_via_api(
     api::parse_curriculum(course_id, &all_results).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+
 pub async fn start_udemy_course_download(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, CoursesState>,
+    host: std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
+    plugin: &crate::CoursesPlugin,
     course_json: String,
     output_dir: String,
 ) -> Result<String, String> {
@@ -176,8 +114,8 @@ pub async fn start_udemy_course_download(
 
     let course_name = course.title.clone();
     let course_id = course.id;
-    let session = state.udemy_session.clone();
-    let active = state.active_downloads.clone();
+    let session = plugin.udemy_session.clone();
+    let active = plugin.active_downloads.clone();
 
     let cancel_token = CancellationToken::new();
 
@@ -190,7 +128,7 @@ pub async fn start_udemy_course_download(
     }
 
     let portal = {
-        let guard = state.udemy_session.lock().await;
+        let guard = plugin.udemy_session.lock().await;
         guard
             .as_ref()
             .map(|s| s.portal_name.clone())
@@ -198,13 +136,11 @@ pub async fn start_udemy_course_download(
     };
 
     let curriculum = if portal != "www" {
-        match fetch_curriculum_via_api(&state, course_id, &portal).await {
+        match fetch_curriculum_via_api(&plugin, course_id, &portal).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("[udemy-api] direct API curriculum failed for portal={}, falling back to webview: {}", portal, e);
-                let api_webview = state.udemy_api_webview.clone();
-                let result_store = state.udemy_api_result.clone();
-                match fetch_curriculum_via_webview(&app, &api_webview, &result_store, course_id, &portal).await {
+                                                match fetch_curriculum_via_webview(&host, course_id, &portal).await {
                     Ok(c) => c,
                     Err(e2) => {
                         active.lock().await.remove(&course_id);
@@ -214,9 +150,7 @@ pub async fn start_udemy_course_download(
             }
         }
     } else {
-        let api_webview = state.udemy_api_webview.clone();
-        let result_store = state.udemy_api_result.clone();
-        match fetch_curriculum_via_webview(&app, &api_webview, &result_store, course_id, &portal).await {
+                        match fetch_curriculum_via_webview(&host, course_id, &portal).await {
             Ok(c) => c,
             Err(e) => {
                 active.lock().await.remove(&course_id);
@@ -233,7 +167,7 @@ pub async fn start_udemy_course_download(
         return Err("drm_protected".to_string());
     }
 
-    let settings = settings_helper::load_settings(&app);
+    let settings = omniget_core::models::settings::AppSettings::default();
 
     tokio::spawn(async move {
         let downloader = UdemyDownloader::new(
@@ -243,10 +177,10 @@ pub async fn start_udemy_course_download(
         );
         let (tx, mut rx) = mpsc::channel(32);
 
-        let app_clone = app.clone();
+        let host_clone = host.clone();
         let progress_forwarder = tokio::spawn(async move {
             while let Some(progress) = rx.recv().await {
-                let _ = app_clone.emit("udemy-download-progress", &progress);
+                let _ = host_clone.emit_event("udemy-download-progress", serde_json::to_value(&progress).unwrap_or_default());
             }
         });
 
@@ -263,27 +197,23 @@ pub async fn start_udemy_course_download(
 
         match result {
             Ok(drm_skipped) => {
-                let _ = app.emit(
-                    "udemy-download-complete",
-                    &UdemyDownloadCompleteEvent {
+                let _ = host.emit_event(
+                    "udemy-download-complete", serde_json::to_value(&UdemyDownloadCompleteEvent {
                         course_name: course.title,
                         success: true,
                         error: None,
                         drm_skipped,
-                    },
-                );
+                    },).unwrap_or_default());
             }
             Err(e) => {
                 tracing::error!("[udemy] download error for '{}': {}", course.title, e);
-                let _ = app.emit(
-                    "udemy-download-complete",
-                    &UdemyDownloadCompleteEvent {
+                let _ = host.emit_event(
+                    "udemy-download-complete", serde_json::to_value(&UdemyDownloadCompleteEvent {
                         course_name: course.title,
                         success: false,
                         error: Some(e.to_string()),
                         drm_skipped: 0,
-                    },
-                );
+                    },).unwrap_or_default());
             }
         }
     });
@@ -291,12 +221,12 @@ pub async fn start_udemy_course_download(
     Ok(format!("Download started: {}", course_name))
 }
 
-#[tauri::command]
+
 pub async fn cancel_udemy_course_download(
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
     course_id: u64,
 ) -> Result<(), String> {
-    let map = state.active_downloads.lock().await;
+    let map = plugin.active_downloads.lock().await;
     if let Some(token) = map.get(&course_id) {
         token.cancel();
         Ok(())

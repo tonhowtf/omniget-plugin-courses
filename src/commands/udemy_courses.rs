@@ -1,13 +1,12 @@
 use std::time::Instant;
 
 use crate::platforms::udemy::api::UdemyCourse;
-use crate::platforms::udemy::webview_api;
-use crate::state::{CoursesState, UdemyCoursesCache};
+use crate::state::UdemyCoursesCache;
 
 const COURSES_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-async fn get_portal(state: &tauri::State<'_, CoursesState>) -> String {
-    let guard = state.udemy_session.lock().await;
+async fn get_portal(plugin: &crate::CoursesPlugin) -> String {
+    let guard = plugin.udemy_session.lock().await;
     guard
         .as_ref()
         .map(|s| s.portal_name.clone())
@@ -53,10 +52,10 @@ fn parse_courses_from_results(results: &[serde_json::Value]) -> Vec<UdemyCourse>
 }
 
 async fn fetch_courses_via_api(
-    state: &tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<UdemyCourse>, String> {
     let (client, portal) = {
-        let guard = state.udemy_session.lock().await;
+        let guard = plugin.udemy_session.lock().await;
         let session = guard.as_ref().ok_or("not_authenticated")?;
         (session.client.clone(), session.portal_name.clone())
     };
@@ -115,81 +114,7 @@ async fn fetch_courses_via_api(
 
     tracing::info!("[udemy-api] found {} total courses via direct API", courses.len());
 
-    let mut cache = state.udemy_courses_cache.lock().await;
-    *cache = Some(UdemyCoursesCache {
-        courses: courses.clone(),
-        fetched_at: Instant::now(),
-    });
-
-    Ok(courses)
-}
-
-async fn fetch_courses_via_webview(
-    app: &tauri::AppHandle,
-    state: &tauri::State<'_, CoursesState>,
-) -> Result<Vec<UdemyCourse>, String> {
-    let portal = get_portal(state).await;
-
-    let result_store = state.udemy_api_result.clone();
-
-    let window = {
-        let mut wv_guard = state.udemy_api_webview.lock().await;
-        match &*wv_guard {
-            Some(w) => w.clone(),
-            None => {
-                let w = webview_api::ensure_api_webview(app, &result_store, &portal)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                *wv_guard = Some(w.clone());
-                w
-            }
-        }
-    };
-
-    let url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses?fields[course]=id,url,title,published_title,image_240x135,num_published_lectures&ordering=-last_accessed,-access_time&page=1&page_size=10000",
-        portal
-    );
-
-    tracing::info!("[udemy-api] fetching courses via webview");
-
-    let body = webview_api::webview_get(&window, &url, &result_store)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let data: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let results = data
-        .get("results")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut courses = parse_courses_from_results(&results);
-
-    let sub_url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscription-course-enrollments?fields[course]=id,title,published_title,image_240x135,num_published_lectures&page=1&page_size=50",
-        portal
-    );
-
-    if let Ok(sub_body) = webview_api::webview_get(&window, &sub_url, &result_store).await {
-        if let Ok(sub_data) = serde_json::from_str::<serde_json::Value>(&sub_body) {
-            if let Some(sub_results) = sub_data.get("results").and_then(|r| r.as_array()) {
-                let existing_ids: std::collections::HashSet<u64> =
-                    courses.iter().map(|c| c.id).collect();
-                for c in parse_courses_from_results(sub_results) {
-                    if !existing_ids.contains(&c.id) {
-                        courses.push(c);
-                    }
-                }
-            }
-        }
-    }
-
-    tracing::info!("[udemy-api] found {} total courses via webview", courses.len());
-
-    let mut cache = state.udemy_courses_cache.lock().await;
+    let mut cache = plugin.udemy_courses_cache.lock().await;
     *cache = Some(UdemyCoursesCache {
         courses: courses.clone(),
         fetched_at: Instant::now(),
@@ -199,30 +124,17 @@ async fn fetch_courses_via_webview(
 }
 
 async fn fetch_courses(
-    app: &tauri::AppHandle,
-    state: &tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<UdemyCourse>, String> {
-    let portal = get_portal(state).await;
-
-    if portal != "www" {
-        match fetch_courses_via_api(state).await {
-            Ok(courses) => return Ok(courses),
-            Err(e) => {
-                tracing::warn!("[udemy-api] direct API failed for portal={}, falling back to webview: {}", portal, e);
-            }
-        }
-    }
-
-    fetch_courses_via_webview(app, state).await
+    fetch_courses_via_api(plugin).await
 }
 
-#[tauri::command]
+
 pub async fn udemy_list_courses(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<UdemyCourse>, String> {
     {
-        let cache = state.udemy_courses_cache.lock().await;
+        let cache = plugin.udemy_courses_cache.lock().await;
         if let Some(ref cached) = *cache {
             if cached.fetched_at.elapsed() < COURSES_CACHE_TTL {
                 return Ok(cached.courses.clone());
@@ -230,17 +142,16 @@ pub async fn udemy_list_courses(
         }
     }
 
-    fetch_courses(&app, &state).await
+    fetch_courses(plugin).await
 }
 
-#[tauri::command]
+
 pub async fn udemy_refresh_courses(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, CoursesState>,
+    plugin: &crate::CoursesPlugin,
 ) -> Result<Vec<UdemyCourse>, String> {
     {
-        let mut cache = state.udemy_courses_cache.lock().await;
+        let mut cache = plugin.udemy_courses_cache.lock().await;
         *cache = None;
     }
-    fetch_courses(&app, &state).await
+    fetch_courses(plugin).await
 }

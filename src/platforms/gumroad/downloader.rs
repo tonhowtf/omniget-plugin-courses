@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use tauri::Emitter;
+
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -23,7 +23,7 @@ pub struct GumroadDownloadProgress {
 }
 
 pub async fn download_product(
-    app: &tauri::AppHandle,
+    host: &std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
     session: &GumroadSession,
     product: &GumroadProduct,
     product_raw: &serde_json::Value,
@@ -54,9 +54,8 @@ pub async fn download_product(
     let total_bytes = Arc::new(AtomicU64::new(0));
     let completed = Arc::new(AtomicUsize::new(0));
 
-    let _ = app.emit(
-        "download-progress",
-        &GumroadDownloadProgress {
+    let _ = host.emit_event(
+        "download-progress", serde_json::to_value(&GumroadDownloadProgress {
             product_id: product.id.clone(),
             product_name: product.name.clone(),
             percent: 0.0,
@@ -64,8 +63,7 @@ pub async fn download_product(
             downloaded_bytes: 0,
             total_files: total_files as u32,
             completed_files: 0,
-        },
-    );
+        },).unwrap_or_default());
 
     for (_i, file) in files.iter().enumerate() {
         if cancel_token.is_cancelled() {
@@ -80,9 +78,8 @@ pub async fn download_product(
             if meta.map(|m| m.len() > 0).unwrap_or(false) {
                 tracing::info!("[gumroad] Skipping existing: {}", dest_path);
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                let _ = app.emit(
-                    "download-progress",
-                    &GumroadDownloadProgress {
+                let _ = host.emit_event(
+                    "download-progress", serde_json::to_value(&GumroadDownloadProgress {
                         product_id: product.id.clone(),
                         product_name: product.name.clone(),
                         percent: done as f64 / total_files as f64 * 100.0,
@@ -90,8 +87,7 @@ pub async fn download_product(
                         downloaded_bytes: total_bytes.load(Ordering::Relaxed),
                         total_files: total_files as u32,
                         completed_files: done as u32,
-                    },
-                );
+                    },).unwrap_or_default());
                 continue;
             }
         }
@@ -163,9 +159,8 @@ pub async fn download_product(
         }
 
         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = app.emit(
-            "download-progress",
-            &GumroadDownloadProgress {
+        let _ = host.emit_event(
+            "download-progress", serde_json::to_value(&GumroadDownloadProgress {
                 product_id: product.id.clone(),
                 product_name: product.name.clone(),
                 percent: done as f64 / total_files as f64 * 100.0,
@@ -173,8 +168,7 @@ pub async fn download_product(
                 downloaded_bytes: total_bytes.load(Ordering::Relaxed),
                 total_files: total_files as u32,
                 completed_files: done as u32,
-            },
-        );
+            },).unwrap_or_default());
     }
 
     if cancel_token.is_cancelled() {

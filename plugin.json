@@ -3,7 +3,7 @@
   "name": "Course Downloader",
   "version": "0.1.0",
   "min_omniget_version": "0.4.0",
-  "description": "Download full courses from 35+ education platforms including Hotmart, Udemy, Kiwify, Teachable, Kajabi, and more.",
+  "description": "Download full courses from 10 education platforms including Hotmart, Udemy, Kiwify, Teachable, Kajabi, and more.",
   "author": "tonhowtf",
   "license": "GPL-3.0",
   "homepage": "https://github.com/tonhowtf/omniget-plugin-courses",
