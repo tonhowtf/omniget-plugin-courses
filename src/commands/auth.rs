@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use crate::platforms::hotmart::auth::{authenticate, delete_saved_session, load_saved_session, save_session};
+use crate::platforms::hotmart::auth::{
+    authenticate, build_client_from_saved, delete_saved_session, load_saved_session, save_session,
+    HotmartSession, SavedSession,
+};
 
 
 const SESSION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
@@ -112,4 +115,106 @@ pub async fn hotmart_logout(
     *plugin.session_validated_at.lock().await = None;
     *plugin.courses_cache.lock().await = None;
     Ok(())
+}
+
+
+pub async fn hotmart_set_cookies(
+    plugin: &crate::CoursesPlugin,
+    cookies_json: String,
+) -> Result<String, String> {
+    // Clear existing session
+    let _ = delete_saved_session().await;
+    {
+        let mut map = plugin.active_downloads.lock().await;
+        for token in map.values() {
+            token.cancel();
+        }
+        map.clear();
+    }
+    plugin.hotmart_session.lock().await.take();
+    *plugin.session_validated_at.lock().await = None;
+    *plugin.courses_cache.lock().await = None;
+
+    // Parse cookies from webview JSON
+    #[derive(serde::Deserialize)]
+    struct CookieEntry {
+        name: String,
+        value: String,
+    }
+
+    let cookies: Vec<CookieEntry> = serde_json::from_str(&cookies_json)
+        .map_err(|e| format!("Invalid cookies JSON: {}", e))?;
+
+    if cookies.is_empty() {
+        return Err("No cookies provided".to_string());
+    }
+
+    let cookie_pairs: Vec<(String, String)> = cookies
+        .iter()
+        .map(|c| (c.name.clone(), c.value.clone()))
+        .collect();
+
+    // Find auth token from cookies - try several known Hotmart cookie names
+    let token = cookie_pairs
+        .iter()
+        .find(|(name, _)| {
+            let n = name.to_lowercase();
+            n == "access_token"
+                || n == "hotmart.token"
+                || n == "hotmart-token"
+                || n == "token"
+        })
+        .map(|(_, value)| value.clone())
+        .ok_or_else(|| {
+            "No auth token found in cookies. Expected 'access_token' or 'hotmart.token'".to_string()
+        })?;
+
+    // Build a temporary saved session to create the client
+    let saved = SavedSession {
+        token: token.clone(),
+        email: String::new(),
+        cookies: cookie_pairs.clone(),
+        saved_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+
+    let client = build_client_from_saved(&saved)
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    // Validate token via Hotmart OAuth check_token endpoint
+    let resp = client
+        .post("https://api-sec-vlc.hotmart.com/security/oauth/check_token")
+        .form(&[("token", &token)])
+        .send()
+        .await
+        .map_err(|e| format!("Token validation failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err("Token validation failed - cookies may be expired".to_string());
+    }
+
+    // Try to extract email from check_token response
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    let email = body
+        .get("user_name")
+        .or_else(|| body.get("email"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("hotmart_user")
+        .to_string();
+
+    let session = HotmartSession {
+        token,
+        email: email.clone(),
+        client,
+        cookies: cookie_pairs,
+    };
+
+    let _ = save_session(&session).await;
+    *plugin.hotmart_session.lock().await = Some(session);
+    *plugin.session_validated_at.lock().await = Some(Instant::now());
+
+    tracing::info!("[hotmart] browser login successful for {}", email);
+    Ok(email)
 }
