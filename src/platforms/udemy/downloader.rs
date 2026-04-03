@@ -93,7 +93,7 @@ impl UdemyDownloader {
 
         let course_dir_name = safe_filename(&course.title);
         let course_dir = PathBuf::from(output_dir).join(&course_dir_name);
-        tokio::fs::create_dir_all(&course_dir).await?;
+        std::fs::create_dir_all(&course_dir)?;
 
         let total_lectures = curriculum.total_lectures;
         let mut completed_lectures: u32 = 0;
@@ -111,7 +111,7 @@ impl UdemyDownloader {
                 safe_filename(&chapter.title)
             );
             let chapter_dir = course_dir.join(&chapter_dir_name);
-            tokio::fs::create_dir_all(&chapter_dir).await?;
+            std::fs::create_dir_all(&chapter_dir)?;
 
             for (lec_idx, lecture) in chapter.lectures.iter().enumerate() {
                 if cancel_token.is_cancelled() {
@@ -225,8 +225,8 @@ impl UdemyDownloader {
                         safe_filename(&lecture.title)
                     );
                     let file_path = chapter_dir.join(&file_name);
-                    if !file_exists_with_content(&file_path).await {
-                        tokio::fs::write(&file_path, body.as_bytes()).await?;
+                    if !file_exists_with_content(&file_path) {
+                        std::fs::write(&file_path, body.as_bytes())?;
                         tracing::info!("[udemy] saved article: {}", file_name);
                     }
                 }
@@ -270,7 +270,7 @@ impl UdemyDownloader {
                 );
                 let caption_path = chapter_dir.join(&caption_name);
 
-                if !file_exists_with_content(&caption_path).await {
+                if !file_exists_with_content(&caption_path) {
                     match download_file_simple(&session.client, url, &caption_path).await {
                         Ok(b) => {
                             total_bytes += b;
@@ -308,7 +308,7 @@ impl UdemyDownloader {
         let file_name = format!("{:02} - {}.mp4", lecture_num, safe_filename(title));
         let file_path = chapter_dir.join(&file_name);
 
-        if file_exists_with_content(&file_path).await {
+        if file_exists_with_content(&file_path) {
             tracing::info!("[udemy] skipping existing video: {}", file_name);
             return Ok((0, 0));
         }
@@ -500,16 +500,16 @@ impl UdemyDownloader {
                 tracing::info!("[udemy] HLS download complete ({} bytes), remuxing...", r.file_size);
                 if let Err(e) = MediaProcessor::remux(&output_str_ts, &output_str_mp4).await {
                     tracing::error!("[udemy] Remuxing failed: {}", e);
-                    let _ = tokio::fs::remove_file(&temp_ts_path).await;
+                    let _ = std::fs::remove_file(&temp_ts_path);
                     return Err(e);
                 }
-                let _ = tokio::fs::remove_file(&temp_ts_path).await;
-                let final_size = tokio::fs::metadata(file_path).await?.len();
+                let _ = std::fs::remove_file(&temp_ts_path);
+                let final_size = std::fs::metadata(file_path)?.len();
                 tracing::info!("[udemy] Remux complete: {}", title);
                 Ok(final_size)
             }
             Err(e) => {
-                let _ = tokio::fs::remove_file(&temp_ts_path).await;
+                let _ = std::fs::remove_file(&temp_ts_path);
                 Err(e)
             }
         }
@@ -559,7 +559,7 @@ impl UdemyDownloader {
 
         let file_path = chapter_dir.join(&safe_name);
 
-        if file_exists_with_content(&file_path).await {
+        if file_exists_with_content(&file_path) {
             tracing::info!("[udemy] skipping existing file: {}", safe_name);
             return Ok(0);
         }
@@ -623,7 +623,7 @@ impl UdemyDownloader {
                 let safe_name = format!("{:02} - {}", lecture_num, base);
                 let file_path = chapter_dir.join(&safe_name);
 
-                if file_exists_with_content(&file_path).await {
+                if file_exists_with_content(&file_path) {
                     return Ok(0);
                 }
 
@@ -641,9 +641,9 @@ impl UdemyDownloader {
                     };
                     let safe_name = format!("{:02} - {}.url", lecture_num, base);
                     let file_path = chapter_dir.join(&safe_name);
-                    if !file_exists_with_content(&file_path).await {
+                    if !file_exists_with_content(&file_path) {
                         let content = format!("[InternetShortcut]\nURL={}", external_url);
-                        tokio::fs::write(&file_path, content.as_bytes()).await?;
+                        std::fs::write(&file_path, content.as_bytes())?;
                     }
                 }
             }
@@ -654,8 +654,8 @@ impl UdemyDownloader {
     }
 }
 
-async fn file_exists_with_content(path: &Path) -> bool {
-    match tokio::fs::metadata(path).await {
+fn file_exists_with_content(path: &Path) -> bool {
+    match std::fs::metadata(path) {
         Ok(m) => m.len() > 0,
         Err(_) => false,
     }
@@ -675,7 +675,7 @@ async fn download_file_simple(
 
     let result = download_file_inner(client, url, output_path, &part_path).await;
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&part_path).await;
+        let _ = std::fs::remove_file(&part_path);
     }
     result
 }
@@ -702,18 +702,18 @@ async fn download_file_inner(
 
     let mut total: u64 = 0;
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(part_path).await?;
+    let mut file = std::fs::File::create(part_path)?;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!("Stream error: {}", e))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
+        std::io::Write::write_all(&mut file, &chunk)?;
         total += chunk.len() as u64;
     }
 
-    tokio::io::AsyncWriteExt::flush(&mut file).await?;
+    std::io::Write::flush(&mut file)?;
     drop(file);
 
-    tokio::fs::rename(part_path, output_path).await?;
+    std::fs::rename(part_path, output_path)?;
 
     Ok(total)
 }
