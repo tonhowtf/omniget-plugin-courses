@@ -635,7 +635,7 @@ pub fn resolve_video_url(page_html: &str, fallback_url: &str) -> String {
 pub async fn save_session(session: &ThinkificSession) -> anyhow::Result<()> {
     let path = session_file_path()?;
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        std::fs::create_dir_all(parent)?;
     }
 
     let saved = SavedSession {
@@ -648,14 +648,14 @@ pub async fn save_session(session: &ThinkificSession) -> anyhow::Result<()> {
     };
 
     let json = serde_json::to_string_pretty(&saved)?;
-    tokio::fs::write(&path, json).await?;
+    std::fs::write(&path, json)?;
     tracing::info!("[thinkific] session saved for {}", session.site_url);
     Ok(())
 }
 
 pub async fn load_session() -> anyhow::Result<Option<ThinkificSession>> {
     let path = session_file_path()?;
-    let json = match tokio::fs::read_to_string(&path).await {
+    let json = match std::fs::read_to_string(&path) {
         Ok(j) => j,
         Err(_) => return Ok(None),
     };
@@ -674,8 +674,8 @@ pub async fn load_session() -> anyhow::Result<Option<ThinkificSession>> {
 
 pub async fn delete_saved_session() -> anyhow::Result<()> {
     let path = session_file_path()?;
-    if tokio::fs::try_exists(&path).await.unwrap_or(false) {
-        tokio::fs::remove_file(&path).await?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
     }
     Ok(())
 }

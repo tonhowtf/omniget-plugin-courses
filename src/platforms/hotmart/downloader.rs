@@ -64,14 +64,14 @@ async fn write_done_manifest(file_path: &str, size: u64, segments: usize) -> any
         completed_at: chrono::Utc::now().to_rfc3339(),
     };
     let json = serde_json::to_string_pretty(&manifest)?;
-    tokio::fs::write(done_path(file_path), json).await?;
+    std::fs::write(done_path(file_path), json)?;
     Ok(())
 }
 
 async fn is_hls_file_valid(file_path: &str) -> bool {
     let dp = done_path(file_path);
 
-    let manifest_bytes = match tokio::fs::read(&dp).await {
+    let manifest_bytes = match std::fs::read(&dp) {
         Ok(b) => b,
         Err(_) => return false,
     };
@@ -81,7 +81,7 @@ async fn is_hls_file_valid(file_path: &str) -> bool {
         Err(_) => return false,
     };
 
-    let meta = match tokio::fs::metadata(file_path).await {
+    let meta = match std::fs::metadata(file_path) {
         Ok(m) => m,
         Err(_) => return false,
     };
@@ -147,7 +147,7 @@ impl HotmartDownloader {
     ) -> anyhow::Result<Vec<PathBuf>> {
         let mut results = Vec::new();
 
-        tokio::fs::create_dir_all(output_dir).await?;
+        std::fs::create_dir_all(output_dir)?;
 
         if lesson.has_media {
             let prefix = self.filename_prefix().to_string();
@@ -186,9 +186,9 @@ impl HotmartDownloader {
                             return paths;
                         }
 
-                        if tokio::fs::try_exists(done_path(&out)).await.unwrap_or(false) {
-                            let _ = tokio::fs::remove_file(&out).await;
-                            let _ = tokio::fs::remove_file(done_path(&out)).await;
+                        if done_path(&out).exists() {
+                            let _ = std::fs::remove_file(&out);
+                            let _ = std::fs::remove_file(done_path(&out));
                         }
 
                         let hls_result = retry_hls_download(
@@ -211,7 +211,7 @@ impl HotmartDownloader {
                             }
                             Err(e) => {
                                 tracing::error!("[download] Falha ao baixar vídeo '{}': {}", out, e);
-                                let _ = tokio::fs::remove_file(&out).await;
+                                let _ = std::fs::remove_file(&out);
                             }
                         }
                     } else if media.media_type.to_uppercase().contains("AUDIO") {
@@ -237,8 +237,8 @@ impl HotmartDownloader {
                                 if safe_name.is_empty() { "Audio.mp4".to_string() } else { safe_name }
                             );
 
-                            if tokio::fs::try_exists(&out).await.unwrap_or(false) {
-                                let meta = tokio::fs::metadata(&out).await;
+                            if std::path::Path::new(&out).exists() {
+                                let meta = std::fs::metadata(&out);
                                 if meta.map(|m| m.len() > 0).unwrap_or(false) {
                                     continue;
                                 }
@@ -248,7 +248,7 @@ impl HotmartDownloader {
                                 Ok(resp) => match resp.bytes().await {
                                     Ok(bytes) => {
                                         let _ = bytes_tx.send(bytes.len() as u64);
-                                        if tokio::fs::write(&out, &bytes).await.is_ok() {
+                                        if std::fs::write(&out, &bytes).is_ok() {
                                             paths.push(PathBuf::from(out));
                                         }
                                     }
@@ -294,8 +294,8 @@ impl HotmartDownloader {
 
                     match player {
                         DetectedPlayer::Vimeo { embed_url } => {
-                            if tokio::fs::try_exists(&out).await.unwrap_or(false) {
-                                let meta = tokio::fs::metadata(&out).await;
+                            if std::path::Path::new(&out).exists() {
+                                let meta = std::fs::metadata(&out);
                                 if meta.map(|m| m.len() > 0).unwrap_or(false) {
                                     return paths;
                                 }
@@ -342,9 +342,9 @@ impl HotmartDownloader {
                                 return paths;
                             }
 
-                            if tokio::fs::try_exists(done_path(&out)).await.unwrap_or(false) {
-                                let _ = tokio::fs::remove_file(&out).await;
-                                let _ = tokio::fs::remove_file(done_path(&out)).await;
+                            if done_path(&out).exists() {
+                                let _ = std::fs::remove_file(&out);
+                                let _ = std::fs::remove_file(done_path(&out));
                             }
 
                             let panda_referer = m3u8_url
@@ -360,13 +360,13 @@ impl HotmartDownloader {
                                 }
                                 Err(e) => {
                                     tracing::error!("[download] Falha PandaVideo: {}", e);
-                                    let _ = tokio::fs::remove_file(&out).await;
+                                    let _ = std::fs::remove_file(&out);
                                 }
                             }
                         }
                         DetectedPlayer::YouTube { video_id, .. } => {
-                            if tokio::fs::try_exists(&out).await.unwrap_or(false) {
-                                let meta = tokio::fs::metadata(&out).await;
+                            if std::path::Path::new(&out).exists() {
+                                let meta = std::fs::metadata(&out);
                                 if meta.map(|m| m.len() > 0).unwrap_or(false) {
                                     return paths;
                                 }
@@ -429,7 +429,7 @@ impl HotmartDownloader {
 
         if self.download_settings.download_attachments && !lesson.attachments.is_empty() {
             let mat_dir = format!("{}/Materiais", output_dir);
-            tokio::fs::create_dir_all(&mat_dir).await?;
+            std::fs::create_dir_all(&mat_dir)?;
 
             let att_futures: Vec<_> = lesson.attachments.iter().map(|att| {
                 let session = session.clone();
@@ -438,7 +438,7 @@ impl HotmartDownloader {
                 let file_membership_id = att.file_membership_id.clone();
 
                 async move {
-                    if tokio::fs::try_exists(&att_path).await.unwrap_or(false) {
+                    if std::path::Path::new(&att_path).exists() {
                         return None;
                     }
                     match download_attachment(&session, &file_membership_id, &att_path).await {
@@ -458,8 +458,8 @@ impl HotmartDownloader {
             if let Some(content) = &lesson.content {
                 if !content.trim().is_empty() {
                     let desc_path = format!("{}/Description.html", output_dir);
-                    if !tokio::fs::try_exists(&desc_path).await.unwrap_or(false) {
-                        tokio::fs::write(&desc_path, content).await?;
+                    if !std::path::Path::new(&desc_path).exists() {
+                        std::fs::write(&desc_path, content)?;
                     }
                 }
             }
@@ -467,14 +467,14 @@ impl HotmartDownloader {
             if let Some(readings) = &lesson.complementary_readings {
                 if !readings.is_empty() {
                     let reading_path = format!("{}/Leitura complementar.html", output_dir);
-                    if !tokio::fs::try_exists(&reading_path).await.unwrap_or(false) {
+                    if !std::path::Path::new(&reading_path).exists() {
                         let mut html = String::new();
                         for link in readings {
                             let title = link.title.as_deref().unwrap_or("");
                             let url = link.url.as_deref().unwrap_or("#");
                             html.push_str(&format!("<a href=\"{}\">{}</a><br>\n", url, title));
                         }
-                        tokio::fs::write(&reading_path, &html).await?;
+                        std::fs::write(&reading_path, &html)?;
                     }
                 }
             }
@@ -520,7 +520,7 @@ impl HotmartDownloader {
             filename::sanitize_path_component(&course.name),
             filename::sanitize_path_component(&course.seller)
         );
-        tokio::fs::create_dir_all(&course_dir).await?;
+        std::fs::create_dir_all(&course_dir)?;
 
         let total_pages: usize = modules.iter().map(|m| m.pages.len()).sum();
         let total_modules = modules.len();
@@ -588,7 +588,7 @@ impl HotmartDownloader {
                         return;
                     }
 
-                    if let Err(e) = tokio::fs::create_dir_all(&task.page_dir).await {
+                    if let Err(e) = std::fs::create_dir_all(&task.page_dir) {
                         tracing::error!("Falha ao criar diretório '{}': {}", task.page_dir, e);
                         done.fetch_add(1, Ordering::Relaxed);
                         return;
@@ -699,7 +699,7 @@ async fn retry_hls_download(
         .await
         {
             Ok(result) => {
-                let meta = tokio::fs::metadata(output_path).await;
+                let meta = std::fs::metadata(output_path);
                 if meta.map(|m| m.len() > 0).unwrap_or(false) {
                     return Ok(result);
                 }
@@ -713,7 +713,7 @@ async fn retry_hls_download(
             }
         }
         if attempt < max_attempts - 1 {
-            let _ = tokio::fs::remove_file(output_path).await;
+            let _ = std::fs::remove_file(output_path);
             let backoff = std::time::Duration::from_secs(2u64.pow(attempt));
             tracing::warn!(
                 "[hls-retry] Tentativa {}/{} falhou para '{}', retentando em {:?}",
@@ -729,15 +729,19 @@ async fn retry_hls_download(
 }
 
 async fn cleanup_part_files(dir: &std::path::Path) {
-    let mut entries = match tokio::fs::read_dir(dir).await {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if name.ends_with(".part") || name.ends_with(".ytdl") {
-                let _ = tokio::fs::remove_file(&path).await;
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
@@ -755,7 +759,7 @@ async fn download_attachment(
             return Err(anyhow!("URL de download vazia para attachment {}", file_membership_id));
         }
         let bytes = reqwest::get(&info.url).await?.bytes().await?;
-        tokio::fs::write(output_path, &bytes).await?;
+        std::fs::write(output_path, &bytes)?;
     } else {
         let lambda_url = info
             .lambda_url
@@ -792,7 +796,7 @@ async fn download_attachment(
                 .map(|f| f.to_str().unwrap_or("file"))
                 .unwrap_or("file")
         );
-        tokio::fs::write(&drm_output, &bytes).await?;
+        std::fs::write(&drm_output, &bytes)?;
     }
 
     Ok(())

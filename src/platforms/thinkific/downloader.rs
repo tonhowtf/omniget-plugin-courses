@@ -49,7 +49,7 @@ pub async fn download_full_course(
         output_dir,
         filename::sanitize_path_component(&course.name)
     );
-    tokio::fs::create_dir_all(&course_dir).await?;
+    std::fs::create_dir_all(&course_dir)?;
 
     if omniget_core::core::course_utils::is_course_complete(&course_dir) {
         tracing::info!("[thinkific] course already complete, skipping");
@@ -82,7 +82,7 @@ pub async fn download_full_course(
 
         let mod_name = filename::sanitize_path_component(&module.name);
         let mod_dir = format!("{}/{}. {}", course_dir, mi + 1, mod_name);
-        tokio::fs::create_dir_all(&mod_dir).await?;
+        std::fs::create_dir_all(&mod_dir)?;
 
         for (li, lesson) in module.lessons.iter().enumerate() {
             if cancel_token.is_cancelled() {
@@ -122,8 +122,8 @@ pub async fn download_full_course(
                 if !video_url.is_empty() {
                     let video_path = format!("{}/{}.mp4", mod_dir, safe_name);
 
-                    if tokio::fs::try_exists(&video_path).await.unwrap_or(false) {
-                        let meta = tokio::fs::metadata(&video_path).await;
+                    if std::path::Path::new(&video_path).exists() {
+                        let meta = std::fs::metadata(&video_path);
                         if meta.map(|m| m.len() > 0).unwrap_or(false) {
                             tracing::info!("[thinkific] Skipping existing: {}", video_path);
                             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -164,12 +164,12 @@ pub async fn download_full_course(
             if let Some(ref html) = detail.html_text {
                 if !html.trim().is_empty() {
                     let html_path = format!("{}/{}.html", mod_dir, safe_name);
-                    if !tokio::fs::try_exists(&html_path).await.unwrap_or(false) {
+                    if !std::path::Path::new(&html_path).exists() {
                         let doc = format!(
                             "<!DOCTYPE html>\n<html><head><meta charset=\"UTF-8\"><title>{}</title>\n<style>body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }} img {{ max-width: 100%; }}</style>\n</head><body>\n<h1>{}</h1>\n{}\n</body></html>",
                             lesson.name, lesson.name, html
                         );
-                        let _ = tokio::fs::write(&html_path, doc).await;
+                        let _ = std::fs::write(&html_path, doc);
                     }
                 }
             }
@@ -182,8 +182,8 @@ pub async fn download_full_course(
                 let file_name = filename::sanitize_path_component(&file.name);
                 let file_path = format!("{}/{}", mod_dir, file_name);
 
-                if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&file_path).await;
+                if std::path::Path::new(&file_path).exists() {
+                    let meta = std::fs::metadata(&file_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         continue;
                     }

@@ -49,7 +49,7 @@ pub async fn download_full_course(
         output_dir,
         filename::sanitize_path_component(&course.name)
     );
-    tokio::fs::create_dir_all(&course_dir).await?;
+    std::fs::create_dir_all(&course_dir)?;
 
     if omniget_core::core::course_utils::is_course_complete(&course_dir) {
         tracing::info!("[rocketseat] course already complete, skipping");
@@ -82,7 +82,7 @@ pub async fn download_full_course(
 
         let mod_name = filename::sanitize_path_component(&module.name);
         let mod_dir = format!("{}/{}. {}", course_dir, mi + 1, mod_name);
-        tokio::fs::create_dir_all(&mod_dir).await?;
+        std::fs::create_dir_all(&mod_dir)?;
 
         for (li, lesson) in module.lessons.iter().enumerate() {
             if cancel_token.is_cancelled() {
@@ -95,8 +95,8 @@ pub async fn download_full_course(
             if let Some(ref vid_id) = lesson.video_id {
                 let video_path = format!("{}/{}.mp4", mod_dir, safe_name);
 
-                if tokio::fs::try_exists(&video_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&video_path).await;
+                if std::path::Path::new(&video_path).exists() {
+                    let meta = std::fs::metadata(&video_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         tracing::info!("[rocketseat] Skipping existing: {}", video_path);
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;

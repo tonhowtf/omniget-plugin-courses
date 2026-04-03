@@ -44,7 +44,7 @@ pub async fn download_product(
         output_dir,
         filename::sanitize_path_component(&product.name)
     );
-    tokio::fs::create_dir_all(&product_dir).await?;
+    std::fs::create_dir_all(&product_dir)?;
 
     if omniget_core::core::course_utils::is_course_complete(&product_dir) {
         return Ok(());
@@ -73,8 +73,8 @@ pub async fn download_product(
         let file_name = filename::sanitize_path_component(&file.name);
         let dest_path = format!("{}/{}", product_dir, file_name);
 
-        if tokio::fs::try_exists(&dest_path).await.unwrap_or(false) {
-            let meta = tokio::fs::metadata(&dest_path).await;
+        if std::path::Path::new(&dest_path).exists() {
+            let meta = std::fs::metadata(&dest_path);
             if meta.map(|m| m.len() > 0).unwrap_or(false) {
                 tracing::info!("[gumroad] Skipping existing: {}", dest_path);
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;

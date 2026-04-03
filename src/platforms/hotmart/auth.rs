@@ -84,7 +84,7 @@ pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::
 pub async fn save_session(session: &HotmartSession) -> anyhow::Result<()> {
     let path = session_file_path()?;
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        std::fs::create_dir_all(parent)?;
     }
 
     let saved = SavedSession {
@@ -98,14 +98,14 @@ pub async fn save_session(session: &HotmartSession) -> anyhow::Result<()> {
     };
 
     let json = serde_json::to_string_pretty(&saved)?;
-    tokio::fs::write(&path, json).await?;
+    std::fs::write(&path, json)?;
     tracing::info!("[session] saved for {}, {} cookies", session.email, session.cookies.len());
     Ok(())
 }
 
 pub async fn load_saved_session() -> anyhow::Result<HotmartSession> {
     let path = session_file_path()?;
-    let json = tokio::fs::read_to_string(&path).await?;
+    let json = std::fs::read_to_string(&path)?;
     let saved: SavedSession = serde_json::from_str(&json)?;
 
     tracing::info!("[session] loaded for {}, {} cookies", saved.email, saved.cookies.len());
@@ -123,7 +123,7 @@ pub async fn load_saved_session() -> anyhow::Result<HotmartSession> {
 pub async fn delete_saved_session() -> anyhow::Result<()> {
     let path = session_file_path()?;
     if path.exists() {
-        tokio::fs::remove_file(&path).await?;
+        std::fs::remove_file(&path)?;
     }
     Ok(())
 }

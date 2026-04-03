@@ -79,6 +79,7 @@ struct PlatformUiConfig {
 
 pub struct CoursesPlugin {
     pub host: Option<Arc<dyn PluginHost>>,
+    pub runtime: Arc<tokio::runtime::Runtime>,
 
     pub hotmart_session: Arc<tokio::sync::Mutex<Option<HotmartSession>>>,
     pub active_downloads: Arc<tokio::sync::Mutex<HashMap<u64, CancellationToken>>>,
@@ -119,6 +120,7 @@ impl Clone for CoursesPlugin {
     fn clone(&self) -> Self {
         Self {
             host: self.host.clone(),
+            runtime: self.runtime.clone(),
             hotmart_session: self.hotmart_session.clone(),
             active_downloads: self.active_downloads.clone(),
             courses_cache: self.courses_cache.clone(),
@@ -158,8 +160,13 @@ impl Clone for CoursesPlugin {
 
 impl CoursesPlugin {
     pub fn new() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime for plugin");
         Self {
             host: None,
+            runtime: Arc::new(runtime),
 
             hotmart_session: Arc::new(tokio::sync::Mutex::new(None)),
             active_downloads: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -399,7 +406,9 @@ impl OmnigetPlugin for CoursesPlugin {
         args: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>> {
         let plugin = self.clone();
+        let runtime_handle = self.runtime.handle().clone();
         Box::pin(async move {
+            runtime_handle.spawn(async move {
             fn get_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
                 serde_json::from_value(
                     args.get(key).cloned().ok_or_else(|| format!("missing '{}'", key))?
@@ -804,6 +813,7 @@ impl OmnigetPlugin for CoursesPlugin {
                 }
                 _ => Err(format!("Unknown command: {}", command)),
             }
+            }).await.map_err(|e| format!("task join error: {}", e))?
         })
     }
 

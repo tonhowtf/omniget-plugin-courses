@@ -49,7 +49,7 @@ pub async fn download_full_course(
         output_dir,
         filename::sanitize_path_component(&group.name)
     );
-    tokio::fs::create_dir_all(&course_dir).await?;
+    std::fs::create_dir_all(&course_dir)?;
 
     if omniget_core::core::course_utils::is_course_complete(&course_dir) {
         return Ok(());
@@ -81,7 +81,7 @@ pub async fn download_full_course(
 
         let mod_name = filename::sanitize_path_component(&module.name);
         let mod_dir = format!("{}/{}. {}", course_dir, mi + 1, mod_name);
-        tokio::fs::create_dir_all(&mod_dir).await?;
+        std::fs::create_dir_all(&mod_dir)?;
 
         for (li, lesson) in module.lessons.iter().enumerate() {
             if cancel_token.is_cancelled() {
@@ -90,7 +90,7 @@ pub async fn download_full_course(
 
             let lesson_name = filename::sanitize_path_component(&lesson.name);
             let lesson_dir = format!("{}/{}. {}", mod_dir, li + 1, lesson_name);
-            tokio::fs::create_dir_all(&lesson_dir).await?;
+            std::fs::create_dir_all(&lesson_dir)?;
 
             let detail = match api::get_lesson_detail(session, &group.slug, &module.id, &lesson.id, &[]).await {
                 Ok(d) => d,
@@ -130,8 +130,8 @@ pub async fn download_full_course(
                     lesson_name
                 );
 
-                if tokio::fs::try_exists(&video_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&video_path).await;
+                if std::path::Path::new(&video_path).exists() {
+                    let meta = std::fs::metadata(&video_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         tracing::info!("[skool] Skipping existing: {}", video_path);
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -174,8 +174,8 @@ pub async fn download_full_course(
                 let file_name = filename::sanitize_path_component(&file.name);
                 let file_path = format!("{}/{}", lesson_dir, file_name);
 
-                if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&file_path).await;
+                if std::path::Path::new(&file_path).exists() {
+                    let meta = std::fs::metadata(&file_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         continue;
                     }

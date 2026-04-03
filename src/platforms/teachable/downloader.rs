@@ -49,7 +49,7 @@ pub async fn download_full_course(
         output_dir,
         filename::sanitize_path_component(&course.name)
     );
-    tokio::fs::create_dir_all(&course_dir).await?;
+    std::fs::create_dir_all(&course_dir)?;
 
     if omniget_core::core::course_utils::is_course_complete(&course_dir) {
         tracing::info!("[teachable] course already complete, skipping");
@@ -82,7 +82,7 @@ pub async fn download_full_course(
 
         let mod_name = filename::sanitize_path_component(&module.name);
         let mod_dir = format!("{}/{}. {}", course_dir, mi + 1, mod_name);
-        tokio::fs::create_dir_all(&mod_dir).await?;
+        std::fs::create_dir_all(&mod_dir)?;
 
         for (li, lesson) in module.lessons.iter().enumerate() {
             if cancel_token.is_cancelled() {
@@ -91,7 +91,7 @@ pub async fn download_full_course(
 
             let lesson_name = filename::sanitize_path_component(&lesson.name);
             let lesson_dir = format!("{}/{}. {}", mod_dir, li + 1, lesson_name);
-            tokio::fs::create_dir_all(&lesson_dir).await?;
+            std::fs::create_dir_all(&lesson_dir)?;
 
             let detail = match api::get_lecture_detail(session, &course.school_id, &course.id, &lesson.id).await {
                 Ok(d) => d,
@@ -145,8 +145,8 @@ pub async fn download_full_course(
                     video_ext
                 );
 
-                if tokio::fs::try_exists(&video_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&video_path).await;
+                if Path::new(&video_path).exists() {
+                    let meta = std::fs::metadata(&video_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         tracing::info!("[teachable] Skipping existing: {}", video_path);
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -179,7 +179,7 @@ pub async fn download_full_course(
                                 lesson.name,
                                 e
                             );
-                            let _ = tokio::fs::remove_file(&video_path).await;
+                            let _ = std::fs::remove_file(&video_path);
                         }
                     }
                 } else {
@@ -219,8 +219,8 @@ pub async fn download_full_course(
                 let file_name = filename::sanitize_path_component(&file.name);
                 let file_path = format!("{}/{}", lesson_dir, file_name);
 
-                if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
-                    let meta = tokio::fs::metadata(&file_path).await;
+                if Path::new(&file_path).exists() {
+                    let meta = std::fs::metadata(&file_path);
                     if meta.map(|m| m.len() > 0).unwrap_or(false) {
                         continue;
                     }
@@ -288,7 +288,7 @@ async fn download_hls_video(
     )
     .await?;
 
-    let meta = tokio::fs::metadata(output_path).await?;
+    let meta = std::fs::metadata(output_path)?;
     Ok(meta.len())
 }
 
