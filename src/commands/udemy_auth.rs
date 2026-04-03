@@ -157,3 +157,33 @@ pub async fn udemy_logout(
     plugin.udemy_api_webview.lock().await.take();
     Ok(())
 }
+
+
+pub async fn udemy_set_cookies(
+    plugin: &crate::CoursesPlugin,
+    cookies_json: String,
+) -> Result<String, String> {
+    // Clear existing session
+    let _ = delete_saved_session().await;
+    plugin.udemy_session.lock().await.take();
+    *plugin.udemy_session_validated_at.lock().await = None;
+    *plugin.udemy_courses_cache.lock().await = None;
+
+    // Reuse the existing cookie JSON authentication logic
+    // The webview sends cookies as a JSON array of {name, value, domain}
+    // which is compatible with authenticate_with_cookie_json's CookieArray format
+    match authenticate_with_cookie_json(&cookies_json).await {
+        Ok(session) => {
+            let email = session.email.clone();
+            let _ = save_session(&session).await;
+            *plugin.udemy_session.lock().await = Some(session);
+            *plugin.udemy_session_validated_at.lock().await = Some(Instant::now());
+            tracing::info!("[udemy] browser login successful for {}", email);
+            Ok(email)
+        }
+        Err(e) => {
+            tracing::error!("[udemy] browser cookie login failed: {}", e);
+            Err(format!("Cookie login failed: {}", e))
+        }
+    }
+}
