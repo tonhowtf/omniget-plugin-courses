@@ -20,6 +20,63 @@ use crate::platforms::greatcourses::api::WondriumCourse;
 use crate::platforms::thinkific::api::ThinkificCourse;
 use crate::platforms::rocketseat::api::RocketseatCourse;
 
+#[derive(serde::Serialize, Clone)]
+struct LoginMethod {
+    method_type: String,
+    command: String,
+    extra_fields: Vec<ExtraField>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct ExtraField {
+    key: String,
+    label: String,
+    placeholder: String,
+    field_type: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct PlatformCommands {
+    check_session: String,
+    logout: String,
+    list: String,
+    refresh: String,
+    download: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cancel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct PlatformFeatures {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captcha_event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_search: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download_arg_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    list_returns_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_subtitle_field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_display: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    string_ids: Option<bool>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct PlatformUiConfig {
+    id: String,
+    name: String,
+    color: String,
+    icon: String,
+    login_methods: Vec<LoginMethod>,
+    commands: PlatformCommands,
+    features: PlatformFeatures,
+}
+
 pub struct CoursesPlugin {
     pub host: Option<Arc<dyn PluginHost>>,
 
@@ -139,6 +196,191 @@ impl CoursesPlugin {
             wondrium_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
+}
+
+fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
+    vec![
+        PlatformUiConfig {
+            id: "hotmart".into(), name: "Hotmart".into(), color: "#F04E23".into(), icon: "hotmart".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_password".into(), command: "hotmart_login".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "hotmart_check_session".into(), logout: "hotmart_logout".into(),
+                list: "hotmart_list_courses".into(), refresh: "hotmart_refresh_courses".into(),
+                download: "start_course_download".into(), cancel: Some("cancel_course_download".into()), search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: Some("hotmart-auth-captcha".into()), has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("price".into()),
+                session_display: None, string_ids: None,
+            },
+        },
+        PlatformUiConfig {
+            id: "udemy".into(), name: "Udemy".into(), color: "#A435F0".into(), icon: "udemy".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_only".into(), command: "udemy_login".into(), extra_fields: vec![] },
+                LoginMethod { method_type: "cookies".into(), command: "udemy_login_cookies".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "udemy_check_session".into(), logout: "udemy_logout".into(),
+                list: "udemy_list_courses".into(), refresh: "udemy_refresh_courses".into(),
+                download: "start_udemy_course_download".into(), cancel: Some("cancel_udemy_course_download".into()), search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("num_published_lectures".into()),
+                session_display: None, string_ids: None,
+            },
+        },
+        PlatformUiConfig {
+            id: "kiwify".into(), name: "Kiwify".into(), color: "#22C55E".into(), icon: "kiwify".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_password".into(), command: "kiwify_login".into(), extra_fields: vec![] },
+                LoginMethod { method_type: "token".into(), command: "kiwify_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "kiwify_check_session".into(), logout: "kiwify_logout".into(),
+                list: "kiwify_list_courses".into(), refresh: "kiwify_refresh_courses".into(),
+                download: "start_kiwify_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("seller".into()),
+                session_display: None, string_ids: None,
+            },
+        },
+        PlatformUiConfig {
+            id: "teachable".into(), name: "Teachable".into(), color: "#4B5563".into(), icon: "teachable".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "token".into(), command: "teachable_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "teachable_check_session".into(), logout: "teachable_logout".into(),
+                list: "teachable_list_courses".into(), refresh: "teachable_refresh_courses".into(),
+                download: "start_teachable_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("slug".into()),
+                session_display: None, string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "kajabi".into(), name: "Kajabi".into(), color: "#2563EB".into(), icon: "kajabi".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "token".into(), command: "kajabi_login_token".into(), extra_fields: vec![
+                    ExtraField { key: "siteId".into(), label: "Site ID".into(), placeholder: "Enter site ID".into(), field_type: "text".into() },
+                ] },
+            ],
+            commands: PlatformCommands {
+                check_session: "kajabi_check_session".into(), logout: "kajabi_logout".into(),
+                list: "kajabi_list_courses".into(), refresh: "kajabi_refresh_courses".into(),
+                download: "start_kajabi_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("slug".into()),
+                session_display: None, string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "gumroad".into(), name: "Gumroad".into(), color: "#FF90E8".into(), icon: "gumroad".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_password".into(), command: "gumroad_login".into(), extra_fields: vec![] },
+                LoginMethod { method_type: "token".into(), command: "gumroad_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "gumroad_check_session".into(), logout: "gumroad_logout".into(),
+                list: "gumroad_list_products".into(), refresh: "gumroad_refresh_products".into(),
+                download: "start_gumroad_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: Some("productJson".into()), list_returns_key: None,
+                item_subtitle_field: Some("creator_name".into()),
+                session_display: None, string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "skool".into(), name: "Skool".into(), color: "#5865F2".into(), icon: "skool".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_password".into(), command: "skool_login".into(), extra_fields: vec![] },
+                LoginMethod { method_type: "token".into(), command: "skool_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "skool_check_session".into(), logout: "skool_logout".into(),
+                list: "skool_list_groups".into(), refresh: "skool_refresh_groups".into(),
+                download: "start_skool_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("num_courses".into()),
+                session_display: None, string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "greatcourses".into(), name: "Wondrium".into(), color: "#1E3A5F".into(), icon: "greatcourses".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "email_password".into(), command: "wondrium_login".into(), extra_fields: vec![] },
+                LoginMethod { method_type: "token".into(), command: "wondrium_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "wondrium_check_session".into(), logout: "wondrium_logout".into(),
+                list: "wondrium_list_courses".into(), refresh: "wondrium_refresh_courses".into(),
+                download: "start_wondrium_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("slug".into()),
+                session_display: None, string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "thinkific".into(), name: "Thinkific".into(), color: "#4A90D9".into(), icon: "thinkific".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "cookies".into(), command: "thinkific_login".into(), extra_fields: vec![
+                    ExtraField { key: "siteUrl".into(), label: "Site URL".into(), placeholder: "https://yourschool.thinkific.com".into(), field_type: "url".into() },
+                ] },
+            ],
+            commands: PlatformCommands {
+                check_session: "thinkific_check_session".into(), logout: "thinkific_logout".into(),
+                list: "thinkific_list_courses".into(), refresh: "thinkific_refresh_courses".into(),
+                download: "start_thinkific_course_download".into(), cancel: None, search: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("slug".into()),
+                session_display: Some("site_url".into()), string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "rocketseat".into(), name: "Rocketseat".into(), color: "#8257E5".into(), icon: "rocketseat".into(),
+            login_methods: vec![
+                LoginMethod { method_type: "token".into(), command: "rocketseat_login_token".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "rocketseat_check_session".into(), logout: "rocketseat_logout".into(),
+                list: "rocketseat_list_courses".into(), refresh: "rocketseat_refresh_courses".into(),
+                download: "start_rocketseat_course_download".into(), cancel: None,
+                search: Some("rocketseat_search_courses".into()),
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: Some(true),
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("slug".into()),
+                session_display: Some("platform_name".into()), string_ids: Some(true),
+            },
+        },
+    ]
 }
 
 impl OmnigetPlugin for CoursesPlugin {
@@ -549,6 +791,17 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::rocketseat::start_rocketseat_course_download(host, &plugin, course_json, output_dir).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
+                "get_platforms" => {
+                    let configs = get_all_platform_configs();
+                    serde_json::to_value(configs).map_err(|e| e.to_string())
+                }
+                "get_platform_config" => {
+                    let platform: String = get_arg(&args, "platform")?;
+                    let configs = get_all_platform_configs();
+                    let config = configs.into_iter().find(|c| c.id == platform)
+                        .ok_or_else(|| format!("Unknown platform: {}", platform))?;
+                    serde_json::to_value(config).map_err(|e| e.to_string())
+                }
                 _ => Err(format!("Unknown command: {}", command)),
             }
         })
@@ -635,6 +888,8 @@ impl OmnigetPlugin for CoursesPlugin {
             "rocketseat_search_courses".into(),
             "rocketseat_refresh_courses".into(),
             "start_rocketseat_course_download".into(),
+            "get_platforms".into(),
+            "get_platform_config".into(),
         ]
     }
 }
