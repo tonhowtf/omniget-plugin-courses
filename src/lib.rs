@@ -210,6 +210,11 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
         PlatformUiConfig {
             id: "hotmart".into(), name: "Hotmart".into(), color: "#F04E23".into(), icon: "hotmart".into(),
             login_methods: vec![
+                LoginMethod { method_type: "browser".into(), command: "hotmart_set_cookies".into(), extra_fields: vec![
+                    ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://app.hotmart.com/login".into(), field_type: "hidden".into() },
+                    ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".hotmart.com,.sso.hotmart.com,.consumer.hotmart.com,.api-sec-vlc.hotmart.com".into(), field_type: "hidden".into() },
+                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "app.hotmart.com/dashboard".into(), field_type: "hidden".into() },
+                ] },
                 LoginMethod { method_type: "email_password".into(), command: "hotmart_login".into(), extra_fields: vec![] },
             ],
             commands: PlatformCommands {
@@ -227,6 +232,11 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
         PlatformUiConfig {
             id: "udemy".into(), name: "Udemy".into(), color: "#A435F0".into(), icon: "udemy".into(),
             login_methods: vec![
+                LoginMethod { method_type: "browser".into(), command: "udemy_set_cookies".into(), extra_fields: vec![
+                    ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://www.udemy.com/join/login-popup/".into(), field_type: "hidden".into() },
+                    ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".udemy.com,www.udemy.com".into(), field_type: "hidden".into() },
+                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "udemy.com/home".into(), field_type: "hidden".into() },
+                ] },
                 LoginMethod { method_type: "email_only".into(), command: "udemy_login".into(), extra_fields: vec![] },
                 LoginMethod { method_type: "cookies".into(), command: "udemy_login_cookies".into(), extra_fields: vec![] },
             ],
@@ -423,6 +433,11 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::auth::hotmart_login(host, &plugin, email, password).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
+                "hotmart_set_cookies" => {
+                    let cookies: String = get_arg(&args, "cookies")?;
+                    let r = commands::auth::hotmart_set_cookies(&plugin, cookies).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
                 "hotmart_check_session" => {
                     let r = commands::auth::hotmart_check_session(&plugin).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
@@ -470,6 +485,11 @@ impl OmnigetPlugin for CoursesPlugin {
                 "udemy_login_cookies" => {
                     let cookie_json: String = get_arg(&args, "cookieJson")?;
                     let r = commands::udemy_auth::udemy_login_cookies(&plugin, cookie_json).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "udemy_set_cookies" => {
+                    let cookies: String = get_arg(&args, "cookies")?;
+                    let r = commands::udemy_auth::udemy_set_cookies(&plugin, cookies).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "udemy_check_session" => {
@@ -820,6 +840,7 @@ impl OmnigetPlugin for CoursesPlugin {
     fn commands(&self) -> Vec<String> {
         vec![
             "hotmart_login".into(),
+            "hotmart_set_cookies".into(),
             "hotmart_check_session".into(),
             "hotmart_logout".into(),
             "hotmart_list_courses".into(),
@@ -830,6 +851,7 @@ impl OmnigetPlugin for CoursesPlugin {
             "get_active_downloads".into(),
             "udemy_login".into(),
             "udemy_login_cookies".into(),
+            "udemy_set_cookies".into(),
             "udemy_check_session".into(),
             "udemy_get_portal".into(),
             "udemy_logout".into(),
