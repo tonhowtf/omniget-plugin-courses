@@ -42,7 +42,7 @@ const UDEMY_CLIENT_ID: &str = "TH96Ov3Ebo3OtgoSH5mOYzYolcowM3ycedWQDDce";
 const UDEMY_CLIENT_SECRET: &str = "f2lgDUDxjFiOlVHUpwQNFUfCQPyMO0tJQMaud53PF01UKueW8enYjeEYoyVeP0bb2XVEDkJ5GLJaVTfM5QgMVz6yyXyydZdA5QhzgvG9UmCPUYaCrIVf7VpmiilfbLJc";
 
 pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::Client> {
-    if saved.portal_name != "www" {
+    if saved.portal_name != "www" || saved.cookies.len() > 5 {
         return build_enterprise_client(saved);
     }
 

@@ -65,7 +65,11 @@ async fn fetch_courses_via_api(
         portal
     );
 
-    tracing::info!("[udemy-api] fetching courses via direct API for portal={}", portal);
+    let token_len = {
+        let guard = plugin.udemy_session.lock().await;
+        guard.as_ref().map(|s| s.access_token.len()).unwrap_or(0)
+    };
+    tracing::info!("[udemy-api] fetching courses: portal={}, token_len={}", portal, token_len);
 
     let resp = client
         .get(&url)
@@ -73,8 +77,11 @@ async fn fetch_courses_via_api(
         .await
         .map_err(|e| format!("API request failed: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("API returned status {}", resp.status()));
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!("[udemy-api] list_courses failed: status={}, body={}", status, &body[..body.len().min(500)]);
+        return Err(format!("API returned status {}", status));
     }
 
     let body = resp.text().await.map_err(|e| format!("Read body failed: {}", e))?;

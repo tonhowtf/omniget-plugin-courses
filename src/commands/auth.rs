@@ -47,15 +47,19 @@ pub async fn hotmart_login(
 pub async fn hotmart_check_session(
     plugin: &crate::CoursesPlugin,
 ) -> Result<String, String> {
+    tracing::info!("[hotmart] check_session: start");
     let has_memory_session = plugin.hotmart_session.lock().await.is_some();
 
     if !has_memory_session {
+        tracing::info!("[hotmart] check_session: no memory session, loading from disk");
         match load_saved_session().await {
             Ok(session) => {
+                tracing::info!("[hotmart] check_session: loaded session for {}", session.email);
                 let mut guard = plugin.hotmart_session.lock().await;
                 *guard = Some(session);
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::info!("[hotmart] check_session: no saved session: {}", e);
                 return Err("not_authenticated".to_string());
             }
         }
@@ -71,6 +75,7 @@ pub async fn hotmart_check_session(
         let validated_at = plugin.session_validated_at.lock().await;
         if let Some(at) = *validated_at {
             if at.elapsed() < SESSION_COOLDOWN {
+                tracing::info!("[hotmart] check_session: cooldown active, returning {}", email);
                 return Ok(email);
             }
         }
@@ -80,14 +85,21 @@ pub async fn hotmart_check_session(
     let client = session.client.clone();
     drop(guard);
 
+    tracing::info!("[hotmart] check_session: validating token (len={})", token.len());
     let resp = client
         .post("https://api-sec-vlc.hotmart.com/security/oauth/check_token")
         .form(&[("token", &token)])
         .send()
         .await
-        .map_err(|e| format!("Validation error: {}", e))?;
+        .map_err(|e| {
+            tracing::error!("[hotmart] check_session: request failed: {}", e);
+            format!("Validation error: {}", e)
+        })?;
 
-    if resp.status().is_success() {
+    let status = resp.status();
+    tracing::info!("[hotmart] check_session: response status={}", status);
+
+    if status.is_success() {
         *plugin.session_validated_at.lock().await = Some(Instant::now());
         Ok(email)
     } else {

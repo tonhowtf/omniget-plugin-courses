@@ -1369,7 +1369,7 @@ dependencies = [
 [[package]]
 name = "omniget-core"
 version = "0.2.16"
-source = "git+https://github.com/tonhowtf/omniget#ad2d6ef7ed27afbb04778154806022fe76bd5a4b"
+source = "git+https://github.com/tonhowtf/omniget#87aaf85199da8e0f5a88e29690ffa4b2574f50e1"
 dependencies = [
  "aes",
  "anyhow",
@@ -1439,7 +1439,7 @@ dependencies = [
 [[package]]
 name = "omniget-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/tonhowtf/omniget#ad2d6ef7ed27afbb04778154806022fe76bd5a4b"
+source = "git+https://github.com/tonhowtf/omniget#87aaf85199da8e0f5a88e29690ffa4b2574f50e1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2039,9 +2039,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

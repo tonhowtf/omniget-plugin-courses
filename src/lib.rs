@@ -214,8 +214,6 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
                 LoginMethod { method_type: "browser".into(), command: "hotmart_set_cookies".into(), extra_fields: vec![
                     ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://sso.hotmart.com/login?redirect=https%3A%2F%2Fconsumer.hotmart.com".into(), field_type: "hidden".into() },
                     ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".hotmart.com,.sso.hotmart.com,.consumer.hotmart.com,.api-sec-vlc.hotmart.com".into(), field_type: "hidden".into() },
-                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "consumer.hotmart.com".into(), field_type: "hidden".into() },
-                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "hmVlcIntegration".into(), field_type: "hidden".into() },
                 ] },
             ],
             commands: PlatformCommands {
@@ -237,7 +235,6 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
                     ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://www.udemy.com/join/login-popup/".into(), field_type: "hidden".into() },
                     ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".udemy.com,www.udemy.com".into(), field_type: "hidden".into() },
                     ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "udemy.com/home".into(), field_type: "hidden".into() },
-                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "access_token".into(), field_type: "hidden".into() },
                 ] },
                 LoginMethod { method_type: "cookies".into(), command: "udemy_login_cookies".into(), extra_fields: vec![] },
             ],
