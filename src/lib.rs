@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod platforms;
+pub mod settings_reader;
 pub mod state;
 
 use std::collections::HashMap;
@@ -434,8 +435,9 @@ impl OmnigetPlugin for CoursesPlugin {
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "hotmart_set_cookies" => {
-                    let cookies: String = get_arg(&args, "cookies")?;
-                    let r = commands::auth::hotmart_set_cookies(&plugin, cookies).await?;
+                    let cookies_val = args.get("cookies").ok_or("missing 'cookies'")?;
+                    let cookies_json = serde_json::to_string(cookies_val).map_err(|e| e.to_string())?;
+                    let r = commands::auth::hotmart_set_cookies(&plugin, cookies_json).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "hotmart_check_session" => {
@@ -482,14 +484,26 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::udemy_auth::udemy_login(host, &plugin, email).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
+                "udemy_request_otp" => {
+                    let email: String = get_arg(&args, "email")?;
+                    commands::udemy_auth::udemy_request_otp(email).await?;
+                    serde_json::to_value("otp_sent").map_err(|e| e.to_string())
+                }
+                "udemy_verify_otp" => {
+                    let email: String = get_arg(&args, "email")?;
+                    let otp_code: String = get_arg(&args, "otpCode")?;
+                    let r = commands::udemy_auth::udemy_verify_otp(&plugin, email, otp_code).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
                 "udemy_login_cookies" => {
                     let cookie_json: String = get_arg(&args, "cookieJson")?;
                     let r = commands::udemy_auth::udemy_login_cookies(&plugin, cookie_json).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "udemy_set_cookies" => {
-                    let cookies: String = get_arg(&args, "cookies")?;
-                    let r = commands::udemy_auth::udemy_set_cookies(&plugin, cookies).await?;
+                    let cookies_val = args.get("cookies").ok_or("missing 'cookies'")?;
+                    let cookies_json = serde_json::to_string(cookies_val).map_err(|e| e.to_string())?;
+                    let r = commands::udemy_auth::udemy_set_cookies(&plugin, cookies_json).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "udemy_check_session" => {
@@ -850,6 +864,8 @@ impl OmnigetPlugin for CoursesPlugin {
             "cancel_course_download".into(),
             "get_active_downloads".into(),
             "udemy_login".into(),
+            "udemy_request_otp".into(),
+            "udemy_verify_otp".into(),
             "udemy_login_cookies".into(),
             "udemy_set_cookies".into(),
             "udemy_check_session".into(),
