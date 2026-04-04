@@ -175,5 +175,94 @@ pub async fn authenticate(
     email: &str,
     password: &str,
 ) -> anyhow::Result<HotmartSession> {
-    Err(anyhow!("Browser-based login not available in plugin mode. Use email/password."))
+    tracing::info!("[hotmart] authenticate: attempting login for {}", email);
+
+    let login_client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| anyhow!("Failed to build login client: {}", e))?;
+
+    let login_body = serde_json::json!({
+        "email": email,
+        "password": password
+    });
+
+    let resp = login_client
+        .post("https://api-sec-vlc.hotmart.com/security/oauth/login")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Origin", "https://app.hotmart.com")
+        .header("Referer", "https://app.hotmart.com/")
+        .json(&login_body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Login request failed: {}", e))?;
+
+    let status = resp.status();
+    let body_text = resp.text().await
+        .map_err(|e| anyhow!("Failed to read login response: {}", e))?;
+
+    tracing::info!("[hotmart] login response status: {}", status);
+
+    if !status.is_success() {
+        let body: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
+
+        if body.get("captcha").is_some()
+            || body_text.to_lowercase().contains("captcha")
+            || status.as_u16() == 403
+        {
+            tracing::warn!("[hotmart] captcha required during login");
+            let _ = host.emit_event(
+                "hotmart-auth-captcha",
+                serde_json::json!({"message": "Captcha required. Please use browser login."}),
+            );
+            return Err(anyhow!("Captcha required. Please use browser login instead."));
+        }
+
+        let error_msg = body
+            .get("message")
+            .or_else(|| body.get("error_description"))
+            .or_else(|| body.get("error"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+
+        return Err(anyhow!("Login failed ({}): {}", status, error_msg));
+    }
+
+    let body: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| anyhow!("Failed to parse login response: {}", e))?;
+
+    let token = body
+        .get("access_token")
+        .or_else(|| body.get("token"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("No access_token in login response"))?
+        .to_string();
+
+    let cookies = vec![("access_token".to_string(), token.clone())];
+
+    let saved = SavedSession {
+        token: token.clone(),
+        email: email.to_string(),
+        cookies: cookies.clone(),
+        saved_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+
+    let client = build_client_from_saved(&saved)
+        .map_err(|e| anyhow!("Failed to build session client: {}", e))?;
+
+    tracing::info!("[hotmart] login successful for {}", email);
+
+    Ok(HotmartSession {
+        token,
+        email: email.to_string(),
+        client,
+        cookies,
+    })
 }
