@@ -259,7 +259,7 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
             commands: PlatformCommands {
                 check_session: "kiwify_check_session".into(), logout: "kiwify_logout".into(),
                 list: "kiwify_list_courses".into(), refresh: "kiwify_refresh_courses".into(),
-                download: "start_kiwify_course_download".into(), cancel: None, search: None,
+                download: "start_kiwify_course_download".into(), cancel: Some("cancel_kiwify_course_download".into()), search: None,
             },
             features: PlatformFeatures {
                 captcha_event: None, has_search: None,
@@ -581,6 +581,11 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::kiwify::start_kiwify_course_download(host, &plugin, course_json, output_dir).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
+                "cancel_kiwify_course_download" => {
+                    let course_id: String = get_arg(&args, "courseId")?;
+                    let r = commands::kiwify::cancel_kiwify_course_download(&plugin, &course_id).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
                 "teachable_request_otp" => {
                     let email: String = get_arg(&args, "email")?;
                     let r = commands::teachable::teachable_request_otp(email).await?;
@@ -891,6 +896,7 @@ impl OmnigetPlugin for CoursesPlugin {
             "kiwify_list_courses".into(),
             "kiwify_refresh_courses".into(),
             "start_kiwify_course_download".into(),
+            "cancel_kiwify_course_download".into(),
             "teachable_request_otp".into(),
             "teachable_verify_otp".into(),
             "teachable_login_token".into(),

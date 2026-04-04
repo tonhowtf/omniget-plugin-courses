@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -221,7 +222,11 @@ pub async fn start_kiwify_course_download(
         serde_json::from_str(&course_json).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let course_name = course.name.clone();
-    let course_id = course.id as u64;
+    let course_id = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        course.id.hash(&mut hasher);
+        hasher.finish()
+    };
     let active = plugin.active_downloads.clone();
 
     let cancel_token = CancellationToken::new();
@@ -274,4 +279,23 @@ pub async fn start_kiwify_course_download(
     });
 
     Ok(format!("Download started: {}", course_name))
+}
+
+pub async fn cancel_kiwify_course_download(
+    plugin: &crate::CoursesPlugin,
+    course_id: &str,
+) -> Result<String, String> {
+    let key = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        course_id.hash(&mut hasher);
+        hasher.finish()
+    };
+    let mut map = plugin.active_downloads.lock().await;
+    match map.remove(&key) {
+        Some(token) => {
+            token.cancel();
+            Ok("Download cancelled".to_string())
+        }
+        None => Err("No active download for this course".to_string()),
+    }
 }

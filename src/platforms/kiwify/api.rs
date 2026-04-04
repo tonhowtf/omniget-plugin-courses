@@ -26,7 +26,7 @@ pub struct SavedSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KiwifyCourse {
-    pub id: i64,
+    pub id: String,
     pub name: String,
     pub seller: String,
     pub image_url: Option<String>,
@@ -223,9 +223,12 @@ pub async fn list_courses(session: &KiwifySession) -> anyhow::Result<Vec<KiwifyC
 
             let id = info_obj
                 .get("id")
-                .and_then(|v| v.as_i64())
-                .or_else(|| item.get("id").and_then(|v| v.as_i64()))
-                .unwrap_or(0);
+                .or_else(|| item.get("id"))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_default();
 
             let name = info_obj
                 .get("name")
@@ -275,42 +278,61 @@ pub async fn list_courses(session: &KiwifySession) -> anyhow::Result<Vec<KiwifyC
     Ok(all_courses)
 }
 
+fn find_modules_in(body: &serde_json::Value) -> Option<&serde_json::Value> {
+    for key in &["modules", "all_modules", "content"] {
+        if body.get(key).is_some() {
+            return body.get(key);
+        }
+    }
+    for wrapper in &["course", "data"] {
+        if let Some(inner) = body.get(wrapper) {
+            for key in &["modules", "all_modules", "sections", "content"] {
+                if inner.get(key).is_some() {
+                    return inner.get(key);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn try_fetch_json(session: &KiwifySession, url: &str) -> Option<serde_json::Value> {
+    let resp = session.client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let text = resp.text().await.ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 pub async fn get_course_content(
     session: &KiwifySession,
-    course_id: i64,
+    course_id: &str,
 ) -> anyhow::Result<Vec<KiwifyModule>> {
-    let club_url = format!(
-        "https://admin-api.kiwify.com/v1/viewer/clubs/{}/content?caipirinha=true",
-        course_id
-    );
+    let urls = [
+        format!("https://admin-api.kiwify.com/v1/viewer/clubs/{}/content?caipirinha=true", course_id),
+        format!("https://admin-api.kiwify.com.br/v1/viewer/courses/{}", course_id),
+        format!("https://admin-api.kiwify.com.br/v1/viewer/courses/{}/sections", course_id),
+    ];
 
-    let body = match session.client.get(&club_url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let text = resp.text().await?;
-            serde_json::from_str::<serde_json::Value>(&text)?
-        }
-        _ => {
-            let fallback_url = format!(
-                "https://admin-api.kiwify.com.br/v1/viewer/courses/{}",
-                course_id
-            );
-            let resp = session.client.get(&fallback_url).send().await?;
-            let status = resp.status();
-            let text = resp.text().await?;
-            if !status.is_success() {
-                return Err(anyhow!(
-                    "get_course_content returned status {}: {}",
-                    status,
-                    &text[..text.len().min(300)]
-                ));
+    let mut body = serde_json::Value::Null;
+
+    for url in &urls {
+        if let Some(parsed) = try_fetch_json(session, url).await {
+            if find_modules_in(&parsed).is_some() {
+                tracing::info!("[kiwify] got modules from {}", url);
+                body = parsed;
+                break;
             }
-            serde_json::from_str::<serde_json::Value>(&text)?
+            tracing::info!("[kiwify] {} returned keys: {:?}", url, parsed.as_object().map(|o| o.keys().collect::<Vec<_>>()));
         }
-    };
+    }
 
-    let modules_obj = body
-        .get("modules")
-        .or_else(|| body.get("content"))
+    if body.is_null() {
+        return Err(anyhow!("No course content found for {}", course_id));
+    }
+
+    let modules_obj = find_modules_in(&body)
         .ok_or_else(|| anyhow!("No modules found in course content response"))?;
 
     let mut modules = Vec::new();
@@ -490,7 +512,7 @@ pub async fn get_course_content(
 
 pub async fn get_lesson_detail(
     session: &KiwifySession,
-    course_id: i64,
+    course_id: &str,
     lesson_id: &str,
 ) -> anyhow::Result<KiwifyLessonDetail> {
     let url = format!(
@@ -513,7 +535,9 @@ pub async fn get_lesson_detail(
 
     let body: serde_json::Value = serde_json::from_str(&body_text)?;
 
-    let lesson = body.get("lesson").unwrap_or(&body);
+    let lesson = body.get("lesson")
+        .or_else(|| body.get("data"))
+        .unwrap_or(&body);
 
     let id = lesson
         .get("id")
@@ -529,25 +553,44 @@ pub async fn get_lesson_detail(
         .to_string();
 
     let description = lesson
-        .get("description")
-        .or_else(|| lesson.get("content"))
+        .get("content")
+        .or_else(|| lesson.get("description"))
         .or_else(|| lesson.get("body"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(String::from);
 
-    let video_url = lesson
-        .get("stream_link")
-        .or_else(|| lesson.get("video_url"))
-        .or_else(|| lesson.get("video"))
-        .and_then(|v| v.as_str())
-        .map(|url| {
-            if url.starts_with('/') {
-                format!("{}{}", CDN_BASE, url)
-            } else {
-                url.to_string()
+    let video_url = {
+        let mut url: Option<String> = None;
+        if let Some(video_obj) = lesson.get("video").and_then(|v| v.as_object()) {
+            for key in &["stream_link", "stream_link_full_url", "download_link", "download_link_full_url", "url", "hls_url"] {
+                if let Some(v) = video_obj.get(*key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    url = Some(v.to_string());
+                    break;
+                }
             }
-        });
+        }
+        if url.is_none() {
+            if let Some(yt) = lesson.get("youtube_video").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                url = Some(yt.to_string());
+            }
+        }
+        if url.is_none() {
+            for key in &["stream_link", "video_url", "media_url"] {
+                if let Some(v) = lesson.get(*key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    url = Some(v.to_string());
+                    break;
+                }
+            }
+        }
+        url.map(|u| {
+            if u.starts_with('/') {
+                format!("{}{}", CDN_BASE, u)
+            } else {
+                u
+            }
+        })
+    };
 
     let files = lesson
         .get("files")
@@ -594,7 +637,7 @@ pub async fn get_lesson_detail(
 
 pub async fn get_file_download_url(
     session: &KiwifySession,
-    course_id: i64,
+    course_id: &str,
     file_id: &str,
 ) -> anyhow::Result<String> {
     let url = format!(
