@@ -67,7 +67,11 @@ fn build_client(cookie_token: &str) -> anyhow::Result<reqwest::Client> {
         "Cookie",
         HeaderValue::from_str(&format!("skooltok={}", cookie_token))?,
     );
-    headers.insert("Accept", HeaderValue::from_static("application/json"));
+    headers.insert("Accept", HeaderValue::from_static("application/json, text/plain, */*"));
+    headers.insert(
+        "Origin",
+        HeaderValue::from_static("https://www.skool.com"),
+    );
     headers.insert(
         "Referer",
         HeaderValue::from_static("https://www.skool.com/"),
@@ -123,6 +127,8 @@ pub async fn authenticate(email: &str, password: &str) -> anyhow::Result<SkoolSe
 
     let resp = temp_client
         .post("https://api2.skool.com/auth/login")
+        .header("Origin", "https://www.skool.com")
+        .header("Referer", "https://www.skool.com/")
         .json(&payload)
         .send()
         .await?;

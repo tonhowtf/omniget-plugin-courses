@@ -85,7 +85,16 @@ fn build_client(token: &str, site_id: &str) -> anyhow::Result<reqwest::Client> {
         "KJB-SITE-ID",
         HeaderValue::from_str(site_id)?,
     );
+    headers.insert(
+        "Kjb-Template-Variant",
+        HeaderValue::from_static("KMA"),
+    );
+    headers.insert(
+        "template_version",
+        HeaderValue::from_static("4.7.3"),
+    );
     headers.insert("Accept", HeaderValue::from_static("application/json"));
+    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
 
     let client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
         .user_agent(USER_AGENT)
@@ -144,6 +153,9 @@ pub async fn request_login_link(email: &str) -> anyhow::Result<String> {
 
     let resp = temp_client
         .post(&format!("{}/login_links", AUTH_BASE))
+        .header("Content-Type", "application/json")
+        .header("Kjb-App-Id", "Kajabi")
+        .header("KJB-DP", "ANDROID")
         .json(&payload)
         .send()
         .await?;
@@ -186,6 +198,9 @@ pub async fn verify_login(email: &str, confirmation_code: &str, login_token: &st
 
     let resp = temp_client
         .post(&format!("{}/authentication", AUTH_BASE))
+        .header("Content-Type", "application/json")
+        .header("Kjb-App-Id", "Kajabi")
+        .header("KJB-DP", "ANDROID")
         .json(&payload)
         .send()
         .await?;
@@ -283,8 +298,8 @@ pub async fn list_courses(session: &KajabiSession) -> anyhow::Result<Vec<KajabiC
 
     loop {
         let url = format!(
-            "{}/sites/{}/courses?page={}&per_page=50",
-            BASE_URL, session.site_id, page
+            "{}/sites/{}/products?page={}&per_page=50",
+            AUTH_BASE, session.site_id, page
         );
 
         let resp = session.client.get(&url).send().await?;

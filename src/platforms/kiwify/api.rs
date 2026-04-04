@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 const USER_AGENT: &str = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0";
 const CDN_BASE: &str = "https://d3pjuhbfoxhm7c.cloudfront.net";
+const FIREBASE_AUTH_KEY: &str = "AIzaSyDmOO1YAGt0X35zykOMTlolvsoBkefLKFU";
+const FIREBASE_AUTH_ENDPOINT: &str = "https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword";
 
 #[derive(Clone)]
 pub struct KiwifySession {
@@ -68,14 +70,15 @@ fn build_client(token: &str) -> anyhow::Result<reqwest::Client> {
         "Authorization",
         HeaderValue::from_str(&format!("Bearer {}", token))?,
     );
-    headers.insert("Accept", HeaderValue::from_static("application/json"));
+    headers.insert("Accept", HeaderValue::from_static("application/json, text/plain, */*"));
+    headers.insert("accept-language", HeaderValue::from_static("pt-BR,pt;q=0.9"));
     headers.insert(
         "Origin",
-        HeaderValue::from_static("https://admin.kiwify.com.br"),
+        HeaderValue::from_static("https://dashboard.kiwify.com"),
     );
     headers.insert(
         "Referer",
-        HeaderValue::from_static("https://admin.kiwify.com.br/"),
+        HeaderValue::from_static("https://dashboard.kiwify.com/"),
     );
 
     let client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
@@ -109,7 +112,8 @@ pub async fn authenticate(email: &str, password: &str) -> anyhow::Result<KiwifyS
     });
 
     let resp = temp_client
-        .post("https://admin-api.kiwify.com.br/v1/handleAuth/login")
+        .post(format!("{}?key={}", FIREBASE_AUTH_ENDPOINT, FIREBASE_AUTH_KEY))
+        .header("Content-Type", "application/json")
         .json(&payload)
         .send()
         .await?;
