@@ -40,7 +40,7 @@ pub async fn start_course_download(
         map.insert(course_id, cancel_token.clone());
     }
 
-    let settings = omniget_core::models::settings::AppSettings::default();
+    let settings = crate::settings_reader::load_app_settings();
 
     tokio::spawn(async move {
         let downloader = HotmartDownloader::new(
