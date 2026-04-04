@@ -116,7 +116,7 @@ impl HotmartDownloader {
             .pool_max_idle_per_host(50)
             .pool_idle_timeout(Duration::from_secs(30))
             .build()
-            .unwrap();
+            .expect("Failed to build HLS client with static config");
 
         Self {
             session,
