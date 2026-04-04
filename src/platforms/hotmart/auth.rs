@@ -29,7 +29,7 @@ pub struct SavedSession {
 fn session_file_path() -> anyhow::Result<PathBuf> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| anyhow!("Could not find app data directory"))?;
-    Ok(data_dir.join("omniget").join("hotmart_session.json"))
+    Ok(data_dir.join("wtf.tonho.omniget").join("hotmart_session.json"))
 }
 
 pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::Client> {
@@ -185,18 +185,16 @@ pub async fn authenticate(
         .build()
         .map_err(|e| anyhow!("Failed to build login client: {}", e))?;
 
-    let login_body = serde_json::json!({
-        "email": email,
-        "password": password
-    });
-
     let resp = login_client
         .post("https://api-sec-vlc.hotmart.com/security/oauth/login")
-        .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/plain, */*")
         .header("Origin", "https://app.hotmart.com")
         .header("Referer", "https://app.hotmart.com/")
-        .json(&login_body)
+        .form(&[
+            ("grant_type", "password"),
+            ("username", email),
+            ("password", password),
+        ])
         .send()
         .await
         .map_err(|e| anyhow!("Login request failed: {}", e))?;
@@ -205,13 +203,12 @@ pub async fn authenticate(
     let body_text = resp.text().await
         .map_err(|e| anyhow!("Failed to read login response: {}", e))?;
 
-    tracing::info!("[hotmart] login response status: {}", status);
+    tracing::info!("[hotmart] login response status: {}, body: {}", status, &body_text[..body_text.len().min(500)]);
 
     if !status.is_success() {
         let body: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
 
-        if body.get("captcha").is_some()
-            || body_text.to_lowercase().contains("captcha")
+        if body_text.to_lowercase().contains("captcha")
             || status.as_u16() == 403
         {
             tracing::warn!("[hotmart] captcha required during login");
@@ -225,11 +222,12 @@ pub async fn authenticate(
         let error_msg = body
             .get("message")
             .or_else(|| body.get("error_description"))
-            .or_else(|| body.get("error"))
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
+            .or_else(|| body.get("error").and_then(|v| v.get("message")).and_then(|v| v.as_str()))
+            .or_else(|| body.get("error").and_then(|v| v.as_str()))
+            .unwrap_or(&body_text[..body_text.len().min(200)]);
 
-        return Err(anyhow!("Login failed ({}): {}", status, error_msg));
+        return Err(anyhow!("Authentication failed (status {}): {}", status, error_msg));
     }
 
     let body: serde_json::Value = serde_json::from_str(&body_text)
@@ -239,7 +237,7 @@ pub async fn authenticate(
         .get("access_token")
         .or_else(|| body.get("token"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("No access_token in login response"))?
+        .ok_or_else(|| anyhow!("No access_token in login response. Keys: {:?}", body.as_object().map(|o| o.keys().collect::<Vec<_>>())))?
         .to_string();
 
     let cookies = vec![("access_token".to_string(), token.clone())];

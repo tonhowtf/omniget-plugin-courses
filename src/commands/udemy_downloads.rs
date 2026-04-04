@@ -135,26 +135,16 @@ pub async fn start_udemy_course_download(
             .unwrap_or_else(|| "www".into())
     };
 
-    let curriculum = if portal != "www" {
-        match fetch_curriculum_via_api(&plugin, course_id, &portal).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("[udemy-api] direct API curriculum failed for portal={}, falling back to webview: {}", portal, e);
-                                                match fetch_curriculum_via_webview(&host, course_id, &portal).await {
-                    Ok(c) => c,
-                    Err(e2) => {
-                        active.lock().await.remove(&course_id);
-                        return Err(format!("Failed to fetch curriculum: {}", e2));
-                    }
+    let curriculum = match fetch_curriculum_via_api(&plugin, course_id, &portal).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[udemy] direct API curriculum failed for portal={}, falling back to webview: {}", portal, e);
+            match fetch_curriculum_via_webview(&host, course_id, &portal).await {
+                Ok(c) => c,
+                Err(e2) => {
+                    active.lock().await.remove(&course_id);
+                    return Err(format!("Failed to fetch curriculum: API={}, Webview={}", e, e2));
                 }
-            }
-        }
-    } else {
-                        match fetch_curriculum_via_webview(&host, course_id, &portal).await {
-            Ok(c) => c,
-            Err(e) => {
-                active.lock().await.remove(&course_id);
-                return Err(format!("Failed to fetch curriculum: {}", e));
             }
         }
     };

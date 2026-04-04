@@ -35,7 +35,7 @@ fn default_portal() -> String {
 fn session_file_path() -> anyhow::Result<PathBuf> {
     let data_dir = dirs::data_dir()
         .ok_or_else(|| anyhow!("Could not find app data directory"))?;
-    Ok(data_dir.join("omniget").join("udemy_session.json"))
+    Ok(data_dir.join("wtf.tonho.omniget").join("udemy_session.json"))
 }
 
 const UDEMY_CLIENT_ID: &str = "TH96Ov3Ebo3OtgoSH5mOYzYolcowM3ycedWQDDce";

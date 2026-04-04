@@ -2,7 +2,7 @@ use omniget_core::models::settings::AppSettings;
 
 pub fn load_app_settings() -> AppSettings {
     let path = match dirs::data_dir() {
-        Some(d) => d.join("omniget").join("settings.json"),
+        Some(d) => d.join("wtf.tonho.omniget").join("settings.json"),
         None => {
             tracing::warn!("[settings] could not determine data directory, using defaults");
             return AppSettings::default();

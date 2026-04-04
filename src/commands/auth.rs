@@ -165,24 +165,27 @@ pub async fn hotmart_set_cookies(
         .iter()
         .find(|(name, _)| {
             let n = name.to_lowercase();
-            n == "access_token"
-                || n == "hotmart.token"
-                || n == "hotmart-token"
-                || n == "token"
+            n == "hmvlcintegration"
         })
-        .map(|(_, value)| value.clone())
         .or_else(|| {
-            cookie_pairs
-                .iter()
-                .find(|(name, value)| {
-                    let n = name.to_lowercase();
-                    (n.contains("token") || n.contains("access"))
-                        && (value.matches('.').count() == 2 || value.len() > 20)
-                })
-                .map(|(name, value)| {
-                    tracing::info!("[hotmart] token found via fuzzy match on cookie '{}'", name);
-                    value.clone()
-                })
+            cookie_pairs.iter().find(|(name, _)| {
+                let n = name.to_lowercase();
+                n == "access_token"
+                    || n == "hotmart.token"
+                    || n == "hotmart-token"
+                    || n == "token"
+            })
+        })
+        .or_else(|| {
+            cookie_pairs.iter().find(|(name, value)| {
+                let n = name.to_lowercase();
+                (n.contains("token") || n.contains("access"))
+                    && (value.matches('.').count() == 2 || value.len() > 20)
+            })
+        })
+        .map(|(name, value)| {
+            tracing::info!("[hotmart] using token from cookie '{}'", name);
+            value.clone()
         })
         .ok_or_else(|| {
             format!(
@@ -190,6 +193,12 @@ pub async fn hotmart_set_cookies(
                 cookie_names
             )
         })?;
+
+    tracing::info!(
+        "[hotmart] token found: len={}, starts_with={}",
+        token.len(),
+        &token[..token.len().min(10)]
+    );
 
     let saved = SavedSession {
         token: token.clone(),

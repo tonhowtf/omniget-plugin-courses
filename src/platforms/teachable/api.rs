@@ -103,7 +103,7 @@ fn build_client(token: &str) -> anyhow::Result<reqwest::Client> {
 fn session_file_path() -> anyhow::Result<PathBuf> {
     let data_dir =
         dirs::data_dir().ok_or_else(|| anyhow!("Could not find app data directory"))?;
-    Ok(data_dir.join("omniget").join("teachable_session.json"))
+    Ok(data_dir.join("wtf.tonho.omniget").join("teachable_session.json"))
 }
 
 pub async fn request_otp(email: &str) -> anyhow::Result<()> {

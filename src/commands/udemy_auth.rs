@@ -46,29 +46,11 @@ pub async fn udemy_verify_otp(
 
 
 pub async fn udemy_login(
-    host: std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
-    plugin: &crate::CoursesPlugin,
-    email: String,
+    _host: std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
+    _plugin: &crate::CoursesPlugin,
+    _email: String,
 ) -> Result<String, String> {
-    let _ = delete_saved_session().await;
-    plugin.udemy_session.lock().await.take();
-    *plugin.udemy_session_validated_at.lock().await = None;
-    *plugin.udemy_courses_cache.lock().await = None;
-
-    match authenticate(&host, &email).await {
-        Ok(session) => {
-            let response_email = session.email.clone();
-            let _ = save_session(&session).await;
-            let mut guard = plugin.udemy_session.lock().await;
-            *guard = Some(session);
-            *plugin.udemy_session_validated_at.lock().await = Some(Instant::now());
-            Ok(response_email)
-        }
-        Err(e) => {
-            tracing::error!("[udemy] login failed: {}", e);
-            Err(format!("Login failed: {}", e))
-        }
-    }
+    Err("Please use Browser Login for Udemy. The email login is not supported due to Cloudflare protection.".to_string())
 }
 
 

@@ -153,6 +153,13 @@ pub async fn get_subdomains(session: &HotmartSession) -> anyhow::Result<Vec<Subd
 }
 
 pub async fn list_courses(session: &HotmartSession) -> anyhow::Result<Vec<Course>> {
+    tracing::info!(
+        "[hotmart] list_courses: token_len={}, cookies={}, email={}",
+        session.token.len(),
+        session.cookies.len(),
+        session.email
+    );
+
     let resp = session
         .client
         .get("https://api-hub.cb.hotmart.com/club-drive-api/rest/v2/purchase/?archived=UNARCHIVED")
@@ -163,7 +170,12 @@ pub async fn list_courses(session: &HotmartSession) -> anyhow::Result<Vec<Course
     let body_text = resp.text().await?;
 
     if !status.is_success() {
-        return Err(anyhow!("list_courses retornou status {}: {}", status, &body_text[..500.min(body_text.len())]));
+        tracing::error!(
+            "[hotmart] list_courses failed: status={}, body={}",
+            status,
+            &body_text[..body_text.len().min(500)]
+        );
+        return Err(anyhow!("API returned status {}", status));
     }
 
     let body: serde_json::Value = serde_json::from_str(&body_text)?;

@@ -87,7 +87,7 @@ fn build_client(cookie_token: &str) -> anyhow::Result<reqwest::Client> {
 fn session_file_path() -> anyhow::Result<PathBuf> {
     let data_dir =
         dirs::data_dir().ok_or_else(|| anyhow!("Could not find app data directory"))?;
-    Ok(data_dir.join("omniget").join("skool_session.json"))
+    Ok(data_dir.join("wtf.tonho.omniget").join("skool_session.json"))
 }
 
 async fn fetch_build_id(client: &reqwest::Client) -> anyhow::Result<String> {
