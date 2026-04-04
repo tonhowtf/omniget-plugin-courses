@@ -81,17 +81,26 @@ pub struct SubdomainInfo {
     pub subdomain: String,
 }
 
-pub fn navigation_headers(token: &str, slug: &str, product_id: u64) -> HeaderMap {
+pub fn navigation_headers(token: &str, slug: &str, product_id: u64) -> anyhow::Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert("Accept", HeaderValue::from_static("application/json, text/plain, */*"));
-    headers.insert("Authorization", format!("Bearer {}", token).parse().unwrap());
+    headers.insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {}", token))
+            .map_err(|e| anyhow!("Invalid token for header: {}", e))?,
+    );
     headers.insert("Origin", HeaderValue::from_static("https://hotmart.com"));
     headers.insert("Referer", HeaderValue::from_static("https://hotmart.com"));
     headers.insert("Pragma", HeaderValue::from_static("no-cache"));
     headers.insert("cache-control", HeaderValue::from_static("no-cache"));
-    headers.insert("slug", slug.parse().unwrap());
-    headers.insert("x-product-id", product_id.to_string().parse().unwrap());
-    headers
+    headers.insert(
+        "slug",
+        HeaderValue::from_str(slug)
+            .map_err(|e| anyhow!("Invalid slug for header '{}': {}", slug, e))?,
+    );
+    headers.insert("x-product-id", HeaderValue::from_str(&product_id.to_string())
+        .map_err(|e| anyhow!("Invalid product_id for header: {}", e))?);
+    Ok(headers)
 }
 
 pub async fn get_subdomains(session: &HotmartSession) -> anyhow::Result<Vec<SubdomainInfo>> {
@@ -265,7 +274,7 @@ pub async fn get_modules(
     let resp = session
         .client
         .get("https://api-club-course-consumption-gateway-ga.cb.hotmart.com/v1/navigation")
-        .headers(navigation_headers(&session.token, slug, product_id))
+        .headers(navigation_headers(&session.token, slug, product_id)?)
         .send()
         .await?;
 
@@ -335,7 +344,7 @@ pub async fn get_lesson(
     let resp = session
         .client
         .get(&url)
-        .headers(navigation_headers(&session.token, slug, product_id))
+        .headers(navigation_headers(&session.token, slug, product_id)?)
         .send()
         .await?;
 
