@@ -190,7 +190,15 @@ impl UdemyDownloader {
         lecture_num: u32,
     ) -> anyhow::Result<(u64, u32)> {
         if lecture.lecture_class == "quiz" || lecture.lecture_class == "practice" {
-            tracing::info!("[udemy] skipping {}: {}", lecture.lecture_class, lecture.title);
+            let quiz_file = chapter_dir.join(format!("{:02} - {} [quiz].json", lecture_num, safe_filename(&lecture.title)));
+            if !file_exists_with_content(&quiz_file) {
+                if let Some(asset) = &lecture.asset {
+                    let json_str = serde_json::to_string_pretty(asset).unwrap_or_default();
+                    if !json_str.is_empty() {
+                        let _ = std::fs::write(&quiz_file, json_str);
+                    }
+                }
+            }
             return Ok((0, 0));
         }
 

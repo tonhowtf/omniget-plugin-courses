@@ -404,6 +404,18 @@ impl OmnigetPlugin for CoursesPlugin {
     fn version(&self) -> &str { env!("CARGO_PKG_VERSION") }
 
     fn initialize(&mut self, host: Arc<dyn PluginHost>) -> anyhow::Result<()> {
+        if let Some(proxy) = host.proxy_config() {
+            omniget_core::core::http_client::init_proxy(
+                omniget_core::models::settings::ProxySettings {
+                    enabled: true,
+                    proxy_type: proxy.proxy_type,
+                    host: proxy.host,
+                    port: proxy.port,
+                    username: proxy.username.unwrap_or_default(),
+                    password: proxy.password.unwrap_or_default(),
+                }
+            );
+        }
         self.host = Some(host);
         Ok(())
     }

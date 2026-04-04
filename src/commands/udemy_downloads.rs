@@ -187,6 +187,14 @@ pub async fn start_udemy_course_download(
 
         match result {
             Ok(drm_skipped) => {
+                if drm_skipped > 0 {
+                    let _ = host.emit_event("udemy-download-progress", serde_json::json!({
+                        "courseId": course_id,
+                        "type": "drm_warning",
+                        "drm_skipped": drm_skipped,
+                        "message": format!("{} lectures have DRM protection and were skipped", drm_skipped)
+                    }));
+                }
                 let _ = host.emit_event(
                     "udemy-download-complete", serde_json::to_value(&UdemyDownloadCompleteEvent {
                         course_name: course.title,
