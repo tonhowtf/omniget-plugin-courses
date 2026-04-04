@@ -122,7 +122,6 @@ pub async fn hotmart_set_cookies(
     plugin: &crate::CoursesPlugin,
     cookies_json: String,
 ) -> Result<String, String> {
-    // Clear existing session
     let _ = delete_saved_session().await;
     {
         let mut map = plugin.active_downloads.lock().await;
@@ -135,15 +134,20 @@ pub async fn hotmart_set_cookies(
     *plugin.session_validated_at.lock().await = None;
     *plugin.courses_cache.lock().await = None;
 
-    // Parse cookies from webview JSON
     #[derive(serde::Deserialize)]
     struct CookieEntry {
         name: String,
         value: String,
+        #[allow(dead_code)]
+        domain: Option<String>,
+        #[allow(dead_code)]
+        path: Option<String>,
     }
 
     let cookies: Vec<CookieEntry> = serde_json::from_str(&cookies_json)
         .map_err(|e| format!("Invalid cookies JSON: {}", e))?;
+
+    tracing::info!("[hotmart] set_cookies: received {} cookies, json size={}", cookies.len(), cookies_json.len());
 
     if cookies.is_empty() {
         return Err("No cookies provided".to_string());
@@ -154,7 +158,9 @@ pub async fn hotmart_set_cookies(
         .map(|c| (c.name.clone(), c.value.clone()))
         .collect();
 
-    // Find auth token from cookies - try several known Hotmart cookie names
+    let cookie_names: Vec<&str> = cookie_pairs.iter().map(|(n, _)| n.as_str()).collect();
+    tracing::info!("[hotmart] cookie names: {:?}", cookie_names);
+
     let token = cookie_pairs
         .iter()
         .find(|(name, _)| {
@@ -165,11 +171,26 @@ pub async fn hotmart_set_cookies(
                 || n == "token"
         })
         .map(|(_, value)| value.clone())
+        .or_else(|| {
+            cookie_pairs
+                .iter()
+                .find(|(name, value)| {
+                    let n = name.to_lowercase();
+                    (n.contains("token") || n.contains("access"))
+                        && (value.matches('.').count() == 2 || value.len() > 20)
+                })
+                .map(|(name, value)| {
+                    tracing::info!("[hotmart] token found via fuzzy match on cookie '{}'", name);
+                    value.clone()
+                })
+        })
         .ok_or_else(|| {
-            "No auth token found in cookies. Expected 'access_token' or 'hotmart.token'".to_string()
+            format!(
+                "No auth token found in cookies. Received cookie names: {:?}",
+                cookie_names
+            )
         })?;
 
-    // Build a temporary saved session to create the client
     let saved = SavedSession {
         token: token.clone(),
         email: String::new(),
@@ -183,7 +204,6 @@ pub async fn hotmart_set_cookies(
     let client = build_client_from_saved(&saved)
         .map_err(|e| format!("Failed to build client: {}", e))?;
 
-    // Validate token via Hotmart OAuth check_token endpoint
     let resp = client
         .post("https://api-sec-vlc.hotmart.com/security/oauth/check_token")
         .form(&[("token", &token)])
@@ -191,11 +211,13 @@ pub async fn hotmart_set_cookies(
         .await
         .map_err(|e| format!("Token validation failed: {}", e))?;
 
-    if !resp.status().is_success() {
-        return Err("Token validation failed - cookies may be expired".to_string());
+    let status = resp.status();
+    tracing::info!("[hotmart] token validation response: {}", status);
+
+    if !status.is_success() {
+        return Err(format!("Token validation failed (status {}) - cookies may be expired", status));
     }
 
-    // Try to extract email from check_token response
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
     let email = body
         .get("user_name")
