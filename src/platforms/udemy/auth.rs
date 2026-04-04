@@ -231,11 +231,113 @@ fn strip_cookie_quotes(value: &str) -> &str {
     }
 }
 
+pub async fn request_otp(email: &str) -> anyhow::Result<()> {
+    tracing::info!("[udemy] requesting OTP for {}", email);
+
+    let client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
+        .user_agent("okhttp/4.12.0 UdemyAndroid 9.51.2(594) (phone)")
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| anyhow!("Failed to build OTP client: {}", e))?;
+
+    let resp = client
+        .post("https://www.udemy.com/api-2.0/auth/udemy-provisional/")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("x-udemy-client-id", UDEMY_CLIENT_ID)
+        .header("x-udemy-client-secret", UDEMY_CLIENT_SECRET)
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("OTP request failed: {}", e))?;
+
+    let status = resp.status();
+    tracing::info!("[udemy] OTP request response: {}", status);
+
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("OTP request failed ({}): {}", status, &body[..body.len().min(300)]));
+    }
+
+    tracing::info!("[udemy] OTP sent to {}", email);
+    Ok(())
+}
+
+pub async fn verify_otp(email: &str, otp_code: &str) -> anyhow::Result<UdemySession> {
+    tracing::info!("[udemy] verifying OTP for {}", email);
+
+    let client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
+        .user_agent("okhttp/4.12.0 UdemyAndroid 9.51.2(594) (phone)")
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| anyhow!("Failed to build verify client: {}", e))?;
+
+    let resp = client
+        .post("https://www.udemy.com/api-2.0/auth/code-verification/")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("x-udemy-client-id", UDEMY_CLIENT_ID)
+        .header("x-udemy-client-secret", UDEMY_CLIENT_SECRET)
+        .json(&serde_json::json!({
+            "email": email,
+            "otp": otp_code
+        }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("OTP verification request failed: {}", e))?;
+
+    let status = resp.status();
+    let body_text = resp.text().await
+        .map_err(|e| anyhow!("Failed to read verify response: {}", e))?;
+
+    tracing::info!("[udemy] OTP verify response: {}", status);
+
+    if !status.is_success() {
+        return Err(anyhow!("OTP verification failed ({}): {}", status, &body_text[..body_text.len().min(300)]));
+    }
+
+    let body: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| anyhow!("Failed to parse verify response: {}", e))?;
+
+    let access_token = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("No access_token in OTP verify response"))?
+        .to_string();
+
+    let cookies = vec![("access_token".to_string(), access_token.clone())];
+
+    let saved = SavedSession {
+        access_token: access_token.clone(),
+        email: email.to_string(),
+        cookies: cookies.clone(),
+        saved_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        portal_name: "www".to_string(),
+    };
+
+    let session_client = build_client_from_saved(&saved)?;
+
+    tracing::info!("[udemy] OTP login successful for {}", email);
+
+    Ok(UdemySession {
+        access_token,
+        email: email.to_string(),
+        client: session_client,
+        cookies,
+        portal_name: "www".to_string(),
+    })
+}
+
 pub async fn authenticate(
-    host: &std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
-    email: &str,
+    _host: &std::sync::Arc<dyn omniget_plugin_sdk::PluginHost>,
+    _email: &str,
 ) -> anyhow::Result<UdemySession> {
-    Err(anyhow!("Browser login not available in plugin mode"))
+    Err(anyhow!("Use udemy_request_otp + udemy_verify_otp instead. The email-only login requires a two-step OTP flow."))
 }
 
 pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Result<UdemySession> {
@@ -260,6 +362,8 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
         CookieArray(Vec<CookieEntry>),
     }
 
+    tracing::info!("[udemy] authenticate_with_cookie_json: json size={}", cookie_json_str.len());
+
     let input: CookieInput = serde_json::from_str(cookie_json_str).map_err(|e| anyhow!("Invalid cookie JSON: {}", e))?;
 
     let export = match input {
@@ -267,11 +371,15 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
         CookieInput::CookieArray(cookies) => CookieExport { url: None, cookies },
     };
 
+    tracing::info!("[udemy] parsed {} cookies", export.cookies.len());
+
     if export.cookies.is_empty() {
         return Err(anyhow!("No cookies provided"));
     }
 
-    // Detect portal from URL or cookie domains
+    let cookie_names: Vec<&str> = export.cookies.iter().map(|c| c.name.as_str()).collect();
+    tracing::info!("[udemy] cookie names: {:?}", cookie_names);
+
     let portal_name = if let Some(ref url) = export.url {
         detect_portal_from_url(url)
     } else {
@@ -299,12 +407,18 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
         .map(|(_, value)| strip_cookie_quotes(value).to_string())
         .unwrap_or_default();
 
-    // Try to extract email from ud_user_jwt cookie (base64url-encoded JWT)
+    if access_token.is_empty() {
+        tracing::warn!("[udemy] no access_token cookie found, enterprise login will rely on cookies only");
+    }
+
     let email = cookies
         .iter()
         .find(|(name, _)| name == "ud_user_jwt")
         .and_then(|(_, value)| decode_jwt_email(value))
-        .unwrap_or_else(|| format!("enterprise@{}.udemy.com", portal_name));
+        .unwrap_or_else(|| {
+            tracing::info!("[udemy] JWT email decode failed or ud_user_jwt not found, using fallback email");
+            format!("enterprise@{}.udemy.com", portal_name)
+        });
 
     let saved = SavedSession {
         access_token: access_token.clone(),
@@ -320,10 +434,11 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
     let client = build_client_from_saved(&saved)?;
 
     tracing::info!(
-        "[udemy] cookie login for portal={}, email={}, {} cookies",
+        "[udemy] cookie login: portal={}, email={}, {} cookies, has_access_token={}",
         portal_name,
         email,
-        cookies.len()
+        cookies.len(),
+        !access_token.is_empty()
     );
 
     Ok(UdemySession {
