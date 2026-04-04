@@ -2,11 +2,47 @@ use std::time::{Duration, Instant};
 
 use crate::platforms::udemy::auth::{
     authenticate, authenticate_with_cookie_json, delete_saved_session, load_saved_session,
-    save_session,
+    request_otp, save_session, verify_otp,
 };
 
 
 const SESSION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+
+pub async fn udemy_request_otp(
+    email: String,
+) -> Result<(), String> {
+    request_otp(&email)
+        .await
+        .map_err(|e| format!("OTP request failed: {}", e))
+}
+
+
+pub async fn udemy_verify_otp(
+    plugin: &crate::CoursesPlugin,
+    email: String,
+    otp_code: String,
+) -> Result<String, String> {
+    let _ = delete_saved_session().await;
+    plugin.udemy_session.lock().await.take();
+    *plugin.udemy_session_validated_at.lock().await = None;
+    *plugin.udemy_courses_cache.lock().await = None;
+
+    match verify_otp(&email, &otp_code).await {
+        Ok(session) => {
+            let response_email = session.email.clone();
+            let _ = save_session(&session).await;
+            let mut guard = plugin.udemy_session.lock().await;
+            *guard = Some(session);
+            *plugin.udemy_session_validated_at.lock().await = Some(Instant::now());
+            Ok(response_email)
+        }
+        Err(e) => {
+            tracing::error!("[udemy] OTP verify failed: {}", e);
+            Err(format!("OTP verification failed: {}", e))
+        }
+    }
+}
 
 
 pub async fn udemy_login(
@@ -163,15 +199,11 @@ pub async fn udemy_set_cookies(
     plugin: &crate::CoursesPlugin,
     cookies_json: String,
 ) -> Result<String, String> {
-    // Clear existing session
     let _ = delete_saved_session().await;
     plugin.udemy_session.lock().await.take();
     *plugin.udemy_session_validated_at.lock().await = None;
     *plugin.udemy_courses_cache.lock().await = None;
 
-    // Reuse the existing cookie JSON authentication logic
-    // The webview sends cookies as a JSON array of {name, value, domain}
-    // which is compatible with authenticate_with_cookie_json's CookieArray format
     match authenticate_with_cookie_json(&cookies_json).await {
         Ok(session) => {
             let email = session.email.clone();
