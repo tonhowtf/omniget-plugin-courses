@@ -167,7 +167,7 @@ pub async fn start_udemy_course_download(
         return Err("drm_protected".to_string());
     }
 
-    let settings = omniget_core::models::settings::AppSettings::default();
+    let settings = crate::settings_reader::load_app_settings();
 
     tokio::spawn(async move {
         let downloader = UdemyDownloader::new(
