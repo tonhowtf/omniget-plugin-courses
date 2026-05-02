@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::platforms::udemy::auth::{
-    authenticate, authenticate_with_cookie_json, delete_saved_session, load_saved_session,
+    authenticate_with_cookie_json, delete_saved_session, load_saved_session,
     request_otp, save_session, verify_otp,
 };
 

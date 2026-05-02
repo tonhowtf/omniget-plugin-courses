@@ -1,7 +1,4 @@
-#[cfg(windows)]
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -183,12 +180,14 @@ pub async fn delete_saved_session() -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 const COOKIE_URIS: &[&str] = &[
     "https://www.udemy.com",
     "https://udemy.com",
 ];
 
 #[cfg(windows)]
+#[allow(dead_code)]
 async fn extract_webview_cookies_for_uri(
         _uri: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
@@ -196,6 +195,7 @@ async fn extract_webview_cookies_for_uri(
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 async fn extract_webview_cookies(
     ) -> anyhow::Result<Vec<(String, String)>> {
     Err(anyhow!("Webview cookie extraction not available in plugin mode"))

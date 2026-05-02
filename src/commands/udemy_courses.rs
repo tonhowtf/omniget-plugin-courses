@@ -5,6 +5,7 @@ use crate::state::UdemyCoursesCache;
 
 const COURSES_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+#[allow(dead_code)]
 async fn get_portal(plugin: &crate::CoursesPlugin) -> String {
     let guard = plugin.udemy_session.lock().await;
     guard

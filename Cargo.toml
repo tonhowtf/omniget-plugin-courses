@@ -38,3 +38,7 @@ omniget-plugin-sdk = { git = "https://github.com/tonhowtf/omniget" }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows-core = "0.61"
+
+[patch."https://github.com/tonhowtf/omniget"]
+omniget-plugin-sdk = { path = "../omniget/src-tauri/omniget-plugin-sdk" }
+omniget-core = { path = "../omniget/src-tauri/omniget-core" }

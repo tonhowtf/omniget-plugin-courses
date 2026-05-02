@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use anyhow::anyhow;
 
 pub async fn create_api_webview(

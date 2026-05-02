@@ -1,5 +1,3 @@
-#[cfg(windows)]
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -129,6 +127,7 @@ pub async fn delete_saved_session() -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 const COOKIE_URIS: &[&str] = &[
     "https://hotmart.com",
     "https://sso.hotmart.com",
@@ -137,6 +136,7 @@ const COOKIE_URIS: &[&str] = &[
 ];
 
 #[cfg(windows)]
+#[allow(dead_code)]
 async fn extract_webview_cookies_for_uri(
         _uri: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
@@ -144,6 +144,7 @@ async fn extract_webview_cookies_for_uri(
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 async fn extract_webview_cookies(
     ) -> anyhow::Result<Vec<(String, String)>> {
     Err(anyhow!("Webview cookie extraction not available in plugin mode"))
