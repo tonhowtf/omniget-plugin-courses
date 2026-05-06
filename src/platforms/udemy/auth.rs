@@ -217,7 +217,7 @@ fn parse_document_cookie(s: &str) -> Vec<(String, String)> {
 
 #[cfg(not(windows))]
 async fn extract_webview_cookies_js(
-        _cookie_data: &Arc<std::sync::Mutex<Option<String>>>,
+        _cookie_data: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) -> anyhow::Result<Vec<(String, String)>> {
     Err(anyhow!("Webview cookie extraction not available in plugin mode"))
 }
