@@ -365,8 +365,13 @@ impl OmnigetPlugin for CoursesPlugin {
                 "start_udemy_course_download" => {
                     let course_json: String = get_arg(&args, "courseJson")?;
                     let output_dir: String = get_arg(&args, "outputDir")?;
+                    let chapter_filter: Option<String> = args
+                        .get("chapterFilter")
+                        .or_else(|| args.get("chapter_filter"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let host = plugin.host.clone().ok_or("not initialized")?;
-                    let r = commands::udemy_downloads::start_udemy_course_download(host, &plugin, course_json, output_dir).await?;
+                    let r = commands::udemy_downloads::start_udemy_course_download(host, &plugin, course_json, output_dir, chapter_filter).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "cancel_udemy_course_download" => {

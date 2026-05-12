@@ -1,9 +1,21 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CookieEntry {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
 
 
 #[derive(Clone)]
@@ -39,7 +51,7 @@ const UDEMY_CLIENT_ID: &str = "TH96Ov3Ebo3OtgoSH5mOYzYolcowM3ycedWQDDce";
 const UDEMY_CLIENT_SECRET: &str = "f2lgDUDxjFiOlVHUpwQNFUfCQPyMO0tJQMaud53PF01UKueW8enYjeEYoyVeP0bb2XVEDkJ5GLJaVTfM5QgMVz6yyXyydZdA5QhzgvG9UmCPUYaCrIVf7VpmiilfbLJc";
 
 pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::Client> {
-    if saved.portal_name != "www" || saved.cookies.len() > 5 {
+    if saved.portal_name != "www" || saved.cookies.len() > 5 || saved.access_token.is_empty() {
         return build_enterprise_client(saved);
     }
 
@@ -322,6 +334,7 @@ pub async fn verify_otp(email: &str, otp_code: &str) -> anyhow::Result<UdemySess
 
     let session_client = build_client_from_saved(&saved)?;
 
+    tracing::info!("[udemy] authenticated via OAuth/OTP");
     tracing::info!("[udemy] OTP login successful for {}", email);
 
     Ok(UdemySession {
@@ -342,14 +355,6 @@ pub async fn authenticate(
 
 pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Result<UdemySession> {
     #[derive(Deserialize)]
-    struct CookieEntry {
-        name: String,
-        value: String,
-        #[allow(dead_code)]
-        domain: Option<String>,
-    }
-
-    #[derive(Deserialize)]
     struct CookieExport {
         url: Option<String>,
         cookies: Vec<CookieEntry>,
@@ -364,7 +369,8 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
 
     tracing::info!("[udemy] authenticate_with_cookie_json: json size={}", cookie_json_str.len());
 
-    let input: CookieInput = serde_json::from_str(cookie_json_str).map_err(|e| anyhow!("Invalid cookie JSON: {}", e))?;
+    let input: CookieInput = serde_json::from_str(cookie_json_str)
+        .map_err(|e| anyhow!("Invalid cookie JSON: {}", e))?;
 
     let export = match input {
         CookieInput::Export(export) => export,
@@ -395,21 +401,23 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
             .unwrap_or_else(|| "www".into())
     };
 
+    let access_token = export
+        .cookies
+        .iter()
+        .find(|c| c.name == "access_token")
+        .map(|c| strip_cookie_quotes(&c.value).to_string())
+        .unwrap_or_default();
+
+    if access_token.is_empty() {
+        tracing::info!("[udemy] no access_token cookie present, falling back to cookies-only auth");
+        return authenticate_with_cookies_only(export.cookies, &portal_name).await;
+    }
+
     let cookies: Vec<(String, String)> = export
         .cookies
         .iter()
         .map(|c| (c.name.clone(), c.value.clone()))
         .collect();
-
-    let access_token = cookies
-        .iter()
-        .find(|(name, _)| name == "access_token")
-        .map(|(_, value)| strip_cookie_quotes(value).to_string())
-        .unwrap_or_default();
-
-    if access_token.is_empty() {
-        tracing::warn!("[udemy] no access_token cookie found, enterprise login will rely on cookies only");
-    }
 
     let email = cookies
         .iter()
@@ -433,12 +441,12 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
 
     let client = build_client_from_saved(&saved)?;
 
+    tracing::info!("[udemy] authenticated via access_token cookie");
     tracing::info!(
-        "[udemy] cookie login: portal={}, email={}, {} cookies, has_access_token={}",
+        "[udemy] cookie login: portal={}, email={}, {} cookies",
         portal_name,
         email,
-        cookies.len(),
-        !access_token.is_empty()
+        cookies.len()
     );
 
     Ok(UdemySession {
@@ -447,6 +455,162 @@ pub async fn authenticate_with_cookie_json(cookie_json_str: &str) -> anyhow::Res
         client,
         cookies,
         portal_name,
+    })
+}
+
+pub async fn authenticate_with_cookies_only(
+    cookies: Vec<CookieEntry>,
+    portal_hint: &str,
+) -> anyhow::Result<UdemySession> {
+    if cookies.is_empty() {
+        return Err(anyhow!("No cookies provided"));
+    }
+
+    let has_session = cookies.iter().any(|c| c.name == "udemy_session");
+    let has_dj = cookies.iter().any(|c| c.name == "dj_session_id");
+    if !has_session && !has_dj {
+        return Err(anyhow!("Missing session cookies (udemy_session/dj_session_id)"));
+    }
+
+    let portal_name = if portal_hint.is_empty() { "www" } else { portal_hint };
+    let base = format!("https://{}.udemy.com", portal_name);
+    let base_url: reqwest::Url = base
+        .parse()
+        .map_err(|e| anyhow!("Invalid portal URL: {}", e))?;
+    let umbrella_url: reqwest::Url = "https://udemy.com/"
+        .parse()
+        .map_err(|e| anyhow!("Invalid umbrella URL: {}", e))?;
+
+    let jar = Jar::default();
+    for c in &cookies {
+        let domain = c.domain.as_deref().unwrap_or(".udemy.com");
+        let path = c.path.as_deref().unwrap_or("/");
+        let cookie_str = format!("{}={}; Domain={}; Path={}", c.name, c.value, domain, path);
+        jar.add_cookie_str(&cookie_str, &base_url);
+        jar.add_cookie_str(&cookie_str, &umbrella_url);
+    }
+
+    let mut default_headers = HeaderMap::new();
+    default_headers.insert(
+        "Accept",
+        HeaderValue::from_static("application/json, text/plain, */*"),
+    );
+    default_headers.insert(
+        "x-udemy-client-id",
+        HeaderValue::from_static(UDEMY_CLIENT_ID),
+    );
+    default_headers.insert(
+        "x-udemy-client-secret",
+        HeaderValue::from_static(UDEMY_CLIENT_SECRET),
+    );
+    default_headers.insert(
+        "accept-language",
+        HeaderValue::from_static("en_US"),
+    );
+
+    let validation_client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .default_headers(default_headers)
+        .cookie_provider(Arc::new(jar))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| anyhow!("Failed to build cookie validation client: {}", e))?;
+
+    let me_url = format!(
+        "{}/api-2.0/users/me/?fields[user]=id,display_name,locale,access_token",
+        base
+    );
+
+    let resp = validation_client
+        .get(&me_url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Cookie session validation request failed: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(anyhow!("Cookie session validation failed: HTTP {}", status));
+    }
+
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| anyhow!("Failed to read /users/me/ body: {}", e))?;
+
+    let body: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| anyhow!("Failed to parse /users/me/ response: {}", e))?;
+
+    let access_token = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+
+    let user_id = body.get("id").and_then(|v| v.as_u64());
+    let display_name = body
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let cookies_tuples: Vec<(String, String)> = cookies
+        .iter()
+        .map(|c| (c.name.clone(), c.value.clone()))
+        .collect();
+
+    let email = cookies_tuples
+        .iter()
+        .find(|(n, _)| n == "ud_user_jwt")
+        .and_then(|(_, v)| decode_jwt_email(v))
+        .unwrap_or_else(|| {
+            if !display_name.is_empty() {
+                let slug: String = display_name
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                    .collect();
+                format!("{}@{}.udemy.com", slug, portal_name)
+            } else if let Some(id) = user_id {
+                format!("user{}@{}.udemy.com", id, portal_name)
+            } else {
+                format!("subscription@{}.udemy.com", portal_name)
+            }
+        });
+
+    if access_token.is_empty() {
+        tracing::info!("[udemy] authenticated via cookie session (no bearer extracted)");
+    } else {
+        tracing::info!("[udemy] authenticated via access_token from /users/me/ response");
+    }
+
+    let saved = SavedSession {
+        access_token: access_token.clone(),
+        email: email.clone(),
+        cookies: cookies_tuples.clone(),
+        saved_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        portal_name: portal_name.to_string(),
+    };
+
+    let session_client = build_client_from_saved(&saved)?;
+
+    tracing::info!(
+        "[udemy] cookie-only session: portal={}, email={}, {} cookies, bearer_extracted={}",
+        portal_name,
+        email,
+        cookies_tuples.len(),
+        !access_token.is_empty()
+    );
+
+    Ok(UdemySession {
+        access_token,
+        email,
+        client: session_client,
+        cookies: cookies_tuples,
+        portal_name: portal_name.to_string(),
     })
 }
 

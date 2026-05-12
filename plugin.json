@@ -1,7 +1,7 @@
 {
   "id": "courses",
   "name": "Course Downloader",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "min_omniget_version": "0.5.0",
   "description": "Download full courses from 10 education platforms including Hotmart, Udemy, Kiwify, Teachable, Kajabi, and more.",
   "author": "tonhowtf",

@@ -107,6 +107,7 @@ pub async fn start_udemy_course_download(
     plugin: &crate::CoursesPlugin,
     course_json: String,
     output_dir: String,
+    chapter_filter_raw: Option<String>,
 ) -> Result<String, String> {
     let course: UdemyCourse =
         serde_json::from_str(&course_json).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -157,12 +158,29 @@ pub async fn start_udemy_course_download(
     }
 
     let settings = crate::settings_reader::load_app_settings();
+    let target_quality = crate::platforms::udemy::downloader::parse_quality_pref(
+        &settings.download.video_quality,
+    );
+    let continuous_lecture_numbers = settings.download.continuous_lecture_numbers;
+    let chapter_filter = chapter_filter_raw
+        .as_deref()
+        .map(crate::platforms::udemy::api::parse_chapter_filter)
+        .unwrap_or_default();
+
+    let download_captions = settings.download.download_subtitles;
+    let caption_locale = settings.download.caption_locale.clone();
 
     tokio::spawn(async move {
         let downloader = UdemyDownloader::new(
             session,
             settings.advanced.max_concurrent_segments,
             settings.advanced.max_retries,
+            settings.download.keep_vtt,
+            target_quality,
+            continuous_lecture_numbers,
+            chapter_filter,
+            download_captions,
+            caption_locale,
         );
         let (tx, mut rx) = mpsc::channel(32);
 

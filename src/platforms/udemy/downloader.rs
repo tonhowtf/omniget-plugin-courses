@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use omniget_core::core::media_processor::MediaProcessor;
 
 use super::api::{self, UdemyCourse};
 use super::auth::UdemySession;
+use super::vtt_to_srt::vtt_to_srt;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0";
 const MAX_FILENAME_BYTES: usize = 200;
@@ -32,10 +34,56 @@ pub struct UdemyDownloader {
     hls_client: reqwest::Client,
     max_concurrent_segments: u32,
     max_retries: u32,
+    keep_vtt: bool,
+    target_quality: Option<u32>,
+    continuous_lecture_numbers: bool,
+    chapter_filter: HashSet<u32>,
+    download_captions: bool,
+    caption_locale: String,
+}
+
+fn strip_emojis(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| {
+            let cp = *c as u32;
+            !((0x1F300..=0x1FAFF).contains(&cp)
+                || (0x2600..=0x27BF).contains(&cp)
+                || (0x1F000..=0x1F2FF).contains(&cp)
+                || (0x2300..=0x23FF).contains(&cp)
+                || (0xFE00..=0xFE0F).contains(&cp)
+                || (0x1F1E6..=0x1F1FF).contains(&cp)
+                || cp == 0x200D
+                || cp == 0x20E3)
+        })
+        .collect()
+}
+
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        let is_space = c.is_whitespace();
+        if is_space {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
 }
 
 fn safe_filename(name: &str) -> String {
-    let sanitized = sanitize_filename::sanitize(name);
+    let stripped = strip_emojis(name);
+    let collapsed = collapse_whitespace(&stripped);
+    let sanitized = sanitize_filename::sanitize(&collapsed);
+    if sanitized.is_empty() {
+        return "untitled".into();
+    }
     if sanitized.len() <= MAX_FILENAME_BYTES {
         return sanitized;
     }
@@ -43,7 +91,16 @@ fn safe_filename(name: &str) -> String {
     while !sanitized.is_char_boundary(end) && end > 0 {
         end -= 1;
     }
-    sanitized[..end].to_string()
+    sanitized[..end].trim_end().to_string()
+}
+
+pub(crate) fn parse_quality_pref(s: &str) -> Option<u32> {
+    let trimmed = s.trim().to_lowercase();
+    if trimmed == "best" || trimmed.is_empty() {
+        return None;
+    }
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 impl UdemyDownloader {
@@ -51,6 +108,12 @@ impl UdemyDownloader {
         session: Arc<Mutex<Option<UdemySession>>>,
         max_concurrent_segments: u32,
         max_retries: u32,
+        keep_vtt: bool,
+        target_quality: Option<u32>,
+        continuous_lecture_numbers: bool,
+        chapter_filter: HashSet<u32>,
+        download_captions: bool,
+        caption_locale: String,
     ) -> Self {
         let hls_client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
             .user_agent(USER_AGENT)
@@ -64,6 +127,12 @@ impl UdemyDownloader {
             hls_client,
             max_concurrent_segments,
             max_retries,
+            keep_vtt,
+            target_quality,
+            continuous_lecture_numbers,
+            chapter_filter,
+            download_captions,
+            caption_locale,
         }
     }
 
@@ -95,19 +164,39 @@ impl UdemyDownloader {
         let course_dir = PathBuf::from(output_dir).join(&course_dir_name);
         std::fs::create_dir_all(&course_dir)?;
 
-        let total_lectures = curriculum.total_lectures;
+        let total_lectures: u32 = if self.chapter_filter.is_empty() {
+            curriculum.total_lectures
+        } else {
+            curriculum
+                .chapters
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| self.chapter_filter.contains(&((*idx + 1) as u32)))
+                .map(|(_, ch)| ch.lectures.len() as u32)
+                .sum()
+        };
         let mut completed_lectures: u32 = 0;
         let mut downloaded_bytes: u64 = 0;
         let mut drm_skipped: u32 = 0;
+        let mut global_lecture_counter: u32 = 0;
 
         for (ch_idx, chapter) in curriculum.chapters.iter().enumerate() {
             if cancel_token.is_cancelled() {
                 return Err(anyhow!("Download cancelled"));
             }
 
+            let chapter_number = (ch_idx + 1) as u32;
+            if !self.chapter_filter.is_empty() && !self.chapter_filter.contains(&chapter_number) {
+                tracing::info!(
+                    "[udemy] skipping chapter {} '{}' (not in filter)",
+                    chapter_number, chapter.title
+                );
+                continue;
+            }
+
             let chapter_dir_name = format!(
                 "{:02} - {}",
-                ch_idx + 1,
+                chapter_number,
                 safe_filename(&chapter.title)
             );
             let chapter_dir = course_dir.join(&chapter_dir_name);
@@ -118,7 +207,12 @@ impl UdemyDownloader {
                     return Err(anyhow!("Download cancelled"));
                 }
 
-                let lecture_num = (lec_idx + 1) as u32;
+                let lecture_num = if self.continuous_lecture_numbers {
+                    global_lecture_counter += 1;
+                    global_lecture_counter
+                } else {
+                    (lec_idx + 1) as u32
+                };
 
                 let _ = progress_tx.send(UdemyCourseDownloadProgress {
                     course_id: course.id,
@@ -251,43 +345,119 @@ impl UdemyDownloader {
             }
         }
 
-        let captions = asset.get("captions").and_then(|v| v.as_array());
-        if let Some(tracks) = captions {
-            for track in tracks {
-                let class = track.get("_class").and_then(|v| v.as_str()).unwrap_or("");
-                if class != "caption" {
-                    continue;
-                }
-                let url = match track.get("url").and_then(|v| v.as_str()) {
-                    Some(u) => u,
-                    None => continue,
-                };
-                let lang = track.get("language")
-                    .or_else(|| track.get("srclang"))
-                    .or_else(|| track.get("label"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+        if self.download_captions {
+            let captions = asset.get("captions").and_then(|v| v.as_array());
+            if let Some(tracks) = captions {
+                let wanted = self.caption_locale.trim().to_lowercase();
+                let mut matched_any = false;
+                let mut available: Vec<String> = Vec::new();
 
-                let ext = if url.contains(".vtt") { "vtt" } else { "srt" };
-                let caption_name = format!(
-                    "{:02} - {}_{}.{}",
-                    lecture_num,
-                    safe_filename(&lecture.title),
-                    lang,
-                    ext
-                );
-                let caption_path = chapter_dir.join(&caption_name);
+                for track in tracks {
+                    let class = track.get("_class").and_then(|v| v.as_str()).unwrap_or("");
+                    if class != "caption" {
+                        continue;
+                    }
+                    let url = match track.get("url").and_then(|v| v.as_str()) {
+                        Some(u) => u,
+                        None => continue,
+                    };
 
-                if !file_exists_with_content(&caption_path) {
-                    match download_file_simple(&session.client, url, &caption_path).await {
-                        Ok(b) => {
-                            total_bytes += b;
-                            tracing::info!("[udemy] saved caption: {}", caption_name);
-                        }
-                        Err(e) => {
-                            tracing::warn!("[udemy] failed to download caption '{}': {}", caption_name, e);
+                    let locale_id_raw = track
+                        .get("locale_id")
+                        .or_else(|| track.get("localeId"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let locale_id_lc = locale_id_raw.to_lowercase();
+                    let locale_prefix = locale_id_lc
+                        .split('_')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+
+                    let display_lang = track
+                        .get("language")
+                        .or_else(|| track.get("srclang"))
+                        .or_else(|| track.get("label"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let track_label = if !locale_id_raw.is_empty() {
+                        locale_id_raw.clone()
+                    } else {
+                        display_lang.to_string()
+                    };
+                    if !track_label.is_empty() {
+                        available.push(track_label.clone());
+                    }
+
+                    let keep = wanted == "all"
+                        || (!wanted.is_empty()
+                            && (locale_id_lc == wanted
+                                || locale_prefix == wanted
+                                || display_lang.to_lowercase() == wanted));
+                    if !keep {
+                        continue;
+                    }
+
+                    matched_any = true;
+
+                    let canonical = if !locale_id_raw.is_empty() {
+                        locale_id_raw.clone()
+                    } else if !display_lang.is_empty() {
+                        display_lang.to_string()
+                    } else {
+                        "unknown".to_string()
+                    };
+                    let canonical_safe = safe_filename(&canonical);
+
+                    let ext = if url.contains(".vtt") { "vtt" } else { "srt" };
+                    let caption_name = format!(
+                        "{:02} - {}.{}.{}",
+                        lecture_num,
+                        safe_filename(&lecture.title),
+                        canonical_safe,
+                        ext
+                    );
+                    let caption_path = chapter_dir.join(&caption_name);
+
+                    if !file_exists_with_content(&caption_path) {
+                        match download_file_simple(&session.client, url, &caption_path).await {
+                            Ok(b) => {
+                                total_bytes += b;
+                                tracing::info!("[udemy] saved caption: {}", caption_name);
+                            }
+                            Err(e) => {
+                                tracing::warn!("[udemy] failed to download caption '{}': {}", caption_name, e);
+                            }
                         }
                     }
+
+                    if ext == "vtt" && file_exists_with_content(&caption_path) {
+                        let srt_path = caption_path.with_extension("srt");
+                        if !file_exists_with_content(&srt_path) {
+                            match vtt_to_srt(&caption_path, &srt_path) {
+                                Ok(()) => {
+                                    tracing::info!("[udemy] converted caption to srt: {}", srt_path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+                                    if !self.keep_vtt {
+                                        let _ = std::fs::remove_file(&caption_path);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("[udemy] vtt→srt conversion failed for '{}': {}", caption_name, e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !matched_any && !available.is_empty() && wanted != "all" && !wanted.is_empty() {
+                    tracing::warn!(
+                        "[udemy] no caption matched locale '{}' for lecture '{}'. Available: {:?}",
+                        self.caption_locale,
+                        lecture.title,
+                        available
+                    );
                 }
             }
         }
@@ -412,8 +582,23 @@ impl UdemyDownloader {
             return Ok(0);
         }
 
-        sources.sort_by(|a, b| b.1.cmp(&a.1));
-        let (best_url, best_height) = sources[0];
+        let (best_url, best_height) = if let Some(target) = self.target_quality {
+            let chosen = sources
+                .iter()
+                .min_by_key(|(_, h)| (*h as i32 - target as i32).abs())
+                .copied()
+                .unwrap_or(sources[0]);
+            if (chosen.1 as i32 - target as i32).abs() > 200 {
+                tracing::info!(
+                    "[udemy] requested {}p, using closest available {}p for '{}'",
+                    target, chosen.1, title
+                );
+            }
+            chosen
+        } else {
+            sources.sort_by(|a, b| b.1.cmp(&a.1));
+            sources[0]
+        };
 
         tracing::info!("[udemy] downloading '{}' at {}p", title, best_height);
 
@@ -463,8 +648,23 @@ impl UdemyDownloader {
         }
 
         if !mp4_sources.is_empty() {
-            mp4_sources.sort_by(|a, b| b.1.cmp(&a.1));
-            let (best_url, best_height) = mp4_sources[0];
+            let (best_url, best_height) = if let Some(target) = self.target_quality {
+                let chosen = mp4_sources
+                    .iter()
+                    .min_by_key(|(_, h)| (*h as i32 - target as i32).abs())
+                    .copied()
+                    .unwrap_or(mp4_sources[0]);
+                if (chosen.1 as i32 - target as i32).abs() > 200 {
+                    tracing::info!(
+                        "[udemy] requested {}p, using closest available {}p for '{}'",
+                        target, chosen.1, title
+                    );
+                }
+                chosen
+            } else {
+                mp4_sources.sort_by(|a, b| b.1.cmp(&a.1));
+                mp4_sources[0]
+            };
 
             tracing::info!("[udemy] downloading '{}' at {}p (via media_sources mp4)", title, best_height);
 

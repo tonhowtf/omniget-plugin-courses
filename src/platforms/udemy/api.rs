@@ -43,7 +43,36 @@ pub struct UdemyCurriculum {
     pub drm_video_lectures: u32,
 }
 
+pub fn parse_chapter_filter(s: &str) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((a, b)) = part.split_once('-') {
+            if let (Ok(start), Ok(end)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                for n in start..=end {
+                    out.insert(n);
+                }
+            }
+        } else if let Ok(n) = part.parse::<u32>() {
+            out.insert(n);
+        }
+    }
+    out
+}
+
 pub fn extract_course_name(url: &str) -> Option<(String, String)> {
+    let re_learn = Regex::new(
+        r"(?i)://([^/]+?)\.udemy\.com/course/([a-zA-Z0-9_-]+)/learn"
+    ).ok()?;
+    if let Some(caps) = re_learn.captures(url) {
+        let portal_name = caps.get(1)?.as_str().to_string();
+        let course_slug = caps.get(2)?.as_str().to_string();
+        return Some((portal_name, course_slug));
+    }
+
     let re = Regex::new(
         r"(?i)://(.+?)\.udemy\.com/(?:course(?:/draft)*/)?([a-zA-Z0-9_-]+)"
     ).ok()?;
