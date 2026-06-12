@@ -170,6 +170,35 @@ pub async fn start_udemy_course_download(
     let download_captions = settings.download.download_subtitles;
     let caption_locale = settings.download.caption_locale.clone();
 
+    let course_locale = if download_captions {
+        match course.locale.clone().filter(|l| !l.trim().is_empty()) {
+            Some(l) => Some(l),
+            None => {
+                let session_snapshot = { plugin.udemy_session.lock().await.clone() };
+                match session_snapshot {
+                    Some(s) => match api::get_course_locale(&s, &portal, course_id).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            tracing::warn!("[udemy] failed to fetch course locale for {}: {}", course_id, e);
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    if download_captions {
+        tracing::info!(
+            "[udemy] caption selection inputs: requested='{}', course_locale='{}'",
+            caption_locale,
+            course_locale.as_deref().unwrap_or("unknown")
+        );
+    }
+
     tokio::spawn(async move {
         let downloader = UdemyDownloader::new(
             session,
@@ -181,6 +210,7 @@ pub async fn start_udemy_course_download(
             chapter_filter,
             download_captions,
             caption_locale,
+            course_locale,
         );
         let (tx, mut rx) = mpsc::channel(32);
 

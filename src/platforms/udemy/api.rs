@@ -14,6 +14,8 @@ pub struct UdemyCourse {
     pub url: Option<String>,
     pub image_url: Option<String>,
     pub num_published_lectures: Option<u32>,
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +198,18 @@ async fn handle_pagination(
     Ok(data)
 }
 
+pub fn extract_course_locale(value: &serde_json::Value) -> Option<String> {
+    let locale = value.get("locale")?;
+    if let Some(s) = locale.as_str() {
+        return if s.is_empty() { None } else { Some(s.to_string()) };
+    }
+    locale
+        .get("locale")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 fn parse_course_from_json(item: &serde_json::Value) -> Option<UdemyCourse> {
     let id = item.get("id")?.as_u64()?;
     let title = item.get("title")?.as_str().unwrap_or("").to_string();
@@ -212,6 +226,8 @@ fn parse_course_from_json(item: &serde_json::Value) -> Option<UdemyCourse> {
         .and_then(|v| v.as_u64())
         .map(|n| n as u32);
 
+    let locale = extract_course_locale(item);
+
     Some(UdemyCourse {
         id,
         title,
@@ -219,6 +235,7 @@ fn parse_course_from_json(item: &serde_json::Value) -> Option<UdemyCourse> {
         url,
         image_url,
         num_published_lectures,
+        locale,
     })
 }
 
@@ -227,7 +244,7 @@ pub async fn list_my_courses(
     portal_name: &str,
 ) -> Result<Vec<UdemyCourse>> {
     let url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses?fields[course]=id,url,title,published_title,image_240x135,num_published_lectures&ordering=-last_accessed,-access_time&page=1&page_size=10000",
+        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses?fields[course]=id,url,title,published_title,image_240x135,num_published_lectures,locale&ordering=-last_accessed,-access_time&page=1&page_size=10000",
         portal_name
     );
 
@@ -254,7 +271,7 @@ pub async fn list_subscription_courses(
     portal_name: &str,
 ) -> Result<Vec<UdemyCourse>> {
     let url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscription-course-enrollments?fields[course]=title,published_title,image_240x135,num_published_lectures&page=1&page_size=50",
+        "https://{}.udemy.com/api-2.0/users/me/subscription-course-enrollments?fields[course]=title,published_title,image_240x135,num_published_lectures,locale&page=1&page_size=50",
         portal_name
     );
 
@@ -436,6 +453,49 @@ pub fn parse_curriculum(course_id: u64, results: &[serde_json::Value]) -> Result
         total_video_lectures,
         drm_video_lectures,
     })
+}
+
+pub async fn get_course_locale(
+    session: &UdemySession,
+    portal_name: &str,
+    course_id: u64,
+) -> Result<Option<String>> {
+    let url = format!(
+        "https://{}.udemy.com/api-2.0/courses/{}/",
+        portal_name, course_id
+    );
+    let params: &[(&str, &str)] = &[("fields[course]", "locale")];
+
+    let resp = api_get_with_retry(&session.client, &url, Some(params)).await?;
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| anyhow!("Failed to parse course locale response: {}", e))?;
+
+    Ok(extract_course_locale(&data))
+}
+
+pub async fn get_fresh_lecture_asset(
+    session: &UdemySession,
+    portal_name: &str,
+    course_id: u64,
+    lecture_id: u64,
+) -> Result<serde_json::Value> {
+    let url = format!(
+        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses/{}/lectures/{}/",
+        portal_name, course_id, lecture_id
+    );
+    let params: &[(&str, &str)] = &[
+        ("fields[lecture]", "asset"),
+        ("fields[asset]", "title,filename,asset_type,status,media_license_token,course_is_drmed,media_sources,stream_urls,download_urls,captions"),
+    ];
+
+    let resp = api_get_with_retry(&session.client, &url, Some(params)).await?;
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| anyhow!("Failed to parse lecture asset response: {}", e))?;
+
+    data.get("asset")
+        .filter(|a| !a.is_null())
+        .cloned()
+        .ok_or_else(|| anyhow!("Lecture response missing asset"))
 }
 
 pub async fn get_course_curriculum(

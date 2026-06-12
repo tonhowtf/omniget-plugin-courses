@@ -85,6 +85,10 @@ pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::
         "accept-language",
         HeaderValue::from_static("en_US"),
     );
+    default_headers.insert(
+        "Referer",
+        HeaderValue::from_static("https://www.udemy.com/"),
+    );
 
     let client = omniget_core::core::http_client::apply_global_proxy(reqwest::Client::builder())
         .user_agent("okhttp/4.12.0 UdemyAndroid 9.51.2(594) (phone)")

@@ -39,6 +39,7 @@ fn parse_courses_from_results(results: &[serde_json::Value]) -> Vec<UdemyCourse>
                 .get("num_published_lectures")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u32);
+            let locale = crate::platforms::udemy::api::extract_course_locale(item);
 
             Some(UdemyCourse {
                 id,
@@ -47,6 +48,7 @@ fn parse_courses_from_results(results: &[serde_json::Value]) -> Vec<UdemyCourse>
                 url,
                 image_url,
                 num_published_lectures,
+                locale,
             })
         })
         .collect()
@@ -62,7 +64,7 @@ async fn fetch_courses_via_api(
     };
 
     let url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses?fields[course]=id,url,title,published_title,image_240x135,num_published_lectures&ordering=-last_accessed,-access_time&page=1&page_size=10000",
+        "https://{}.udemy.com/api-2.0/users/me/subscribed-courses?fields[course]=id,url,title,published_title,image_240x135,num_published_lectures,locale&ordering=-last_accessed,-access_time&page=1&page_size=10000",
         portal
     );
 
@@ -98,7 +100,7 @@ async fn fetch_courses_via_api(
     let mut courses = parse_courses_from_results(&results);
 
     let sub_url = format!(
-        "https://{}.udemy.com/api-2.0/users/me/subscription-course-enrollments?fields[course]=id,title,published_title,image_240x135,num_published_lectures&page=1&page_size=50",
+        "https://{}.udemy.com/api-2.0/users/me/subscription-course-enrollments?fields[course]=id,title,published_title,image_240x135,num_published_lectures,locale&page=1&page_size=50",
         portal
     );
 

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use omniget_core::models::media::{DownloadOptions, DownloadResult, MediaInfo, MediaType, VideoQuality};
-use crate::platforms::traits::PlatformDownloader;
+use crate::platforms::traits::{PlatformDownloader, ProgressUpdate};
 
 pub struct KiwifyDownloader;
 
@@ -63,7 +63,7 @@ impl PlatformDownloader for KiwifyDownloader {
         &self,
         _info: &MediaInfo,
         _opts: &DownloadOptions,
-        _progress: mpsc::Sender<f64>,
+        _progress: mpsc::Sender<ProgressUpdate>,
     ) -> anyhow::Result<DownloadResult> {
         Err(anyhow!(
             "Use the courses interface to download Kiwify courses"
