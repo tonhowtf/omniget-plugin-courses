@@ -61,7 +61,8 @@ jobs:
           node-version: 24
 
       - name: Build Frontend
-        run: cd frontend && npm ci && npm run build
+        shell: bash
+        run: if [ -d frontend ]; then cd frontend && npm ci && npm run build; else echo "no frontend dir, skipping"; fi
 
       - name: Package
         shell: bash
