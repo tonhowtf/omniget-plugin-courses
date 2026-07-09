@@ -1026,9 +1026,17 @@ impl UdemyDownloader {
             return Ok(0);
         }
 
-        let _ = download_file_simple(&session.client, &url, &file_path).await;
-
-        Ok(0)
+        match download_file_simple(&session.client, &url, &file_path).await {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                tracing::warn!(
+                    "[udemy] failed to download supplementary asset '{}': {}",
+                    safe_name,
+                    e
+                );
+                Ok(0)
+            }
+        }
     }
 
     async fn download_course_resources(
@@ -1079,7 +1087,7 @@ impl UdemyDownloader {
                 let file_path = res_dir.join(&safe_name);
 
                 if file_exists_with_content(&file_path) {
-                    total_bytes += std::fs::metadata(&file_path)?.len();
+                    total_bytes += std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                     continue;
                 }
 
