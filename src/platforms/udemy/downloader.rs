@@ -287,6 +287,17 @@ impl UdemyDownloader {
             }
         }
 
+        tracing::info!("[udemy] downloading course-level resources for '{}'", course.title);
+        match self.download_course_resources(&session, course.id, &course_dir).await {
+            Ok(b) => {
+                downloaded_bytes += b;
+                tracing::info!("[udemy] resources downloaded: {} bytes", b);
+            }
+            Err(e) => {
+                tracing::warn!("[udemy] resources download skipped: {}", e);
+            }
+        }
+
         let _ = progress_tx.send(UdemyCourseDownloadProgress {
             course_id: course.id,
             course_name: course.title.clone(),
@@ -385,8 +396,7 @@ impl UdemyDownloader {
             }
         }
 
-        let supp_assets = asset.get("supplementary_assets").and_then(|v| v.as_array());
-        if let Some(assets) = supp_assets {
+        if let Some(assets) = &lecture.supplementary_assets {
             for supp in assets {
                 total_bytes += self.download_supplementary_asset(
                     session, supp, chapter_dir, lecture_num
@@ -965,43 +975,126 @@ impl UdemyDownloader {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        match asset_type.as_str() {
-            "file" | "sourcecode" => {
-                let download_url = supp.get("download_urls")
-                    .and_then(|d| {
-                        if let Some(obj) = d.as_object() {
-                            for (_key, val) in obj {
-                                if let Some(arr) = val.as_array() {
-                                    if let Some(first) = arr.first() {
-                                        return first.get("file").and_then(|f| f.as_str()).map(|s| s.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        None
-                    });
-
-                let url = match download_url {
-                    Some(u) => u,
-                    None => return Ok(0),
-                };
-
+        if asset_type == "externallink" {
+            let external_url = supp.get("external_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !external_url.is_empty() {
                 let base = if filename.is_empty() {
                     safe_filename(title)
                 } else {
                     safe_filename(filename)
                 };
-                let safe_name = format!("{:02} - {}", lecture_num, base);
+                let safe_name = format!("{:02} - {}.url", lecture_num, base);
                 let file_path = chapter_dir.join(&safe_name);
+                if !file_exists_with_content(&file_path) {
+                    let content = format!("[InternetShortcut]\nURL={}", external_url);
+                    std::fs::write(&file_path, content.as_bytes())?;
+                }
+            }
+            return Ok(0);
+        }
+
+        let download_url = supp.get("download_urls")
+            .and_then(|d| {
+                if let Some(obj) = d.as_object() {
+                    for (_key, val) in obj {
+                        if let Some(arr) = val.as_array() {
+                            if let Some(first) = arr.first() {
+                                return first.get("file").and_then(|f| f.as_str()).map(|s| s.to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            });
+
+        let url = match download_url {
+            Some(u) => u,
+            None => return Ok(0),
+        };
+
+        let base = if filename.is_empty() {
+            safe_filename(title)
+        } else {
+            safe_filename(filename)
+        };
+        let safe_name = format!("{:02} - {}", lecture_num, base);
+        let file_path = chapter_dir.join(&safe_name);
+
+        if file_exists_with_content(&file_path) {
+            return Ok(0);
+        }
+
+        let _ = download_file_simple(&session.client, &url, &file_path).await;
+
+        Ok(0)
+    }
+
+    async fn download_course_resources(
+        &self,
+        session: &UdemySession,
+        course_id: u64,
+        course_dir: &Path,
+    ) -> anyhow::Result<u64> {
+        let resources = api::get_course_resources(
+            session, &session.portal_name, course_id
+        ).await?;
+
+        if resources.is_empty() {
+            return Ok(0);
+        }
+
+        let res_dir = course_dir.join("00 - Course Resources");
+        std::fs::create_dir_all(&res_dir)?;
+
+        let mut total_bytes: u64 = 0;
+
+        for (i, res) in resources.iter().enumerate() {
+            let title = res.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let filename = res.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+
+            let download_url = res.get("download_urls").and_then(|d| {
+                if let Some(obj) = d.as_object() {
+                    for (_key, val) in obj {
+                        if let Some(arr) = val.as_array() {
+                            if let Some(first) = arr.first() {
+                                if let Some(url) = first.get("file").and_then(|f| f.as_str()) {
+                                    return Some(url.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            });
+
+            if let Some(url) = download_url {
+                let base = if filename.is_empty() {
+                    safe_filename(title)
+                } else {
+                    safe_filename(filename)
+                };
+                let safe_name = format!("{:02} - {}", i + 1, base);
+                let file_path = res_dir.join(&safe_name);
 
                 if file_exists_with_content(&file_path) {
-                    return Ok(0);
+                    total_bytes += std::fs::metadata(&file_path)?.len();
+                    continue;
                 }
 
-                download_file_simple(&session.client, &url, &file_path).await.ok();
-            }
-            "externallink" => {
-                let external_url = supp.get("external_url")
+                match download_file_simple(&session.client, &url, &file_path).await {
+                    Ok(b) => {
+                        total_bytes += b;
+                        tracing::info!("[udemy] downloaded resource: {}", safe_name);
+                    }
+                    Err(e) => {
+                        tracing::warn!("[udemy] failed to download resource '{}': {}", safe_name, e);
+                    }
+                }
+            } else {
+                let external_url = res.get("url")
+                    .or_else(|| res.get("external_url"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !external_url.is_empty() {
@@ -1010,18 +1103,17 @@ impl UdemyDownloader {
                     } else {
                         safe_filename(filename)
                     };
-                    let safe_name = format!("{:02} - {}.url", lecture_num, base);
-                    let file_path = chapter_dir.join(&safe_name);
+                    let safe_name = format!("{:02} - {}.url", i + 1, base);
+                    let file_path = res_dir.join(&safe_name);
                     if !file_exists_with_content(&file_path) {
                         let content = format!("[InternetShortcut]\nURL={}", external_url);
                         std::fs::write(&file_path, content.as_bytes())?;
                     }
                 }
             }
-            _ => {}
         }
 
-        Ok(0)
+        Ok(total_bytes)
     }
 }
 

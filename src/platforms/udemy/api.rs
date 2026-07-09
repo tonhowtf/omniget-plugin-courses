@@ -33,6 +33,8 @@ pub struct UdemyLecture {
     pub object_index: u32,
     pub lecture_class: String,
     pub asset: Option<serde_json::Value>,
+    #[serde(default)]
+    pub supplementary_assets: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -411,12 +413,17 @@ pub fn parse_curriculum(course_id: u64, results: &[serde_json::Value]) -> Result
                     }
                 }
 
+                let supplementary_assets = item.get("supplementary_assets")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().cloned().collect());
+
                 let lecture = UdemyLecture {
                     id,
                     title,
                     object_index,
                     lecture_class: class.to_string(),
                     asset,
+                    supplementary_assets,
                 };
 
                 if let Some(ref mut ch) = current_chapter {
@@ -527,4 +534,38 @@ pub async fn get_course_curriculum(
         .unwrap_or_default();
 
     parse_curriculum(course_id, &results)
+}
+
+pub async fn get_course_resources(
+    session: &UdemySession,
+    portal_name: &str,
+    course_id: u64,
+) -> Result<Vec<serde_json::Value>> {
+    let url = format!(
+        "https://{}.udemy.com/api-2.0/courses/{}/resources/",
+        portal_name, course_id
+    );
+
+    tracing::info!("[udemy-api] fetching resources for course {}", course_id);
+
+    let data = match api_get_with_retry(&session.client, &url, None).await {
+        Ok(resp) => {
+            let text = resp.text().await
+                .map_err(|e| anyhow!("Failed to read resources response: {}", e))?;
+            serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| anyhow!("Failed to parse resources JSON: {}", e))?
+        }
+        Err(e) => {
+            tracing::warn!("[udemy-api] resources not available for course {}: {}", course_id, e);
+            return Ok(Vec::new());
+        }
+    };
+
+    let results = data.get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    tracing::info!("[udemy-api] found {} resources", results.len());
+    Ok(results)
 }
