@@ -6,7 +6,23 @@
     "connection_failed": "Falha na conexão",
     "connected_as": "Conectado como {{email}}",
     "back": "Voltar para Cursos",
-    "coming_soon": "Em breve"
+    "coming_soon": "Em breve",
+    "session_expired": "Session expired — sign in again",
+    "not_reachable": "Could not reach the platform",
+    "not_reachable_hint": "Check your connection or proxy, then try again. Signing in is still possible.",
+    "platform_hidden_hint": "Platforms the installed plugin does not support are hidden. Update it in the Marketplace to see more.",
+    "sections_choose": "Escolher seções…",
+    "sections_title": "Escolha o que baixar",
+    "sections_loading": "Carregando a estrutura do curso…",
+    "sections_load_failed": "Não foi possível carregar a estrutura do curso",
+    "sections_selected": "{{sections}} de {{total}} seções · {{lectures}} aulas",
+    "sections_select_all": "Selecionar todas",
+    "sections_select_none": "Limpar seleção",
+    "sections_lectures": "{{count}} aulas",
+    "sections_drm": "{{count}} com DRM, serão puladas",
+    "sections_none_selected": "Escolha pelo menos uma seção",
+    "sections_download": "Baixar {{count}} seções",
+    "sections_download_all": "Baixar o curso inteiro"
   },
   "hotmart": {
     "title": "Hotmart",
@@ -36,7 +52,9 @@
     "choose_folder": "Escolher pasta de download",
     "refresh": "Atualizar",
     "unknown_error": "Erro desconhecido",
-    "captcha_detected": "Captcha detectado — resolva na janela de login."
+    "captcha_detected": "Captcha detectado — resolva na janela de login.",
+    "external_platform_hint": "This course is delivered outside Hotmart Club, so OmniGet cannot download it from here. Open it on the creator's platform; if that platform is Udemy or Kiwify, sign in to it in Courses.",
+    "open_external": "Open on the platform"
   },
   "udemy": {
     "title": "Udemy",

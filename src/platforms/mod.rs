@@ -4,3 +4,4 @@ pub mod hotmart;
 pub mod udemy;
 pub mod kiwify;
 pub mod rocketseat;
+pub mod metaanalysis;

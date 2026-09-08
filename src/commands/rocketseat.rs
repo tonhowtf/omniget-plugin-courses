@@ -23,12 +23,7 @@ pub async fn rocketseat_login_token(
     plugin: &crate::CoursesPlugin,
     token: String,
 ) -> Result<String, String> {
-    let _ = api::delete_saved_session().await;
-    plugin.rocketseat_session.lock().await.take();
-    *plugin.rocketseat_session_validated_at.lock().await = None;
-    *plugin.rocketseat_courses_cache.lock().await = None;
-
-    let parsed = omniget_core::core::cookie_parser::parse_cookie_input(&token, "skylab_next_access_token_v4");
+    let parsed = omniget_core::core::cookie_parser::parse_cookie_input(&token, api::ACCESS_TOKEN_COOKIE);
 
     tracing::info!(
         "[rocketseat] parsed: token_len={}, cookie_count={}, cookie_string_len={}",
@@ -46,12 +41,58 @@ pub async fn rocketseat_login_token(
     };
 
     if parsed_token.is_empty() || parsed_token.len() < 10 {
-        return Err("Could not extract token. Paste the value of cookie 'skylab_next_access_token_v4' or the full cookie JSON.".to_string());
+        return Err(format!(
+            "Could not extract token. Paste the value of cookie '{}' or the full cookie JSON.",
+            api::ACCESS_TOKEN_COOKIE
+        ));
     }
 
-    tracing::info!("[rocketseat] using token: {}...", &parsed_token[..parsed_token.len().min(30)]);
+    login_with_token(plugin, parsed_token).await
+}
 
-    let session = api::create_session(&parsed_token)
+/// Login from a cookie payload: the browser-login webview, the Cookie
+/// Manager (extension captures) and the paste box all end up here. Accepts
+/// the JSON array the app produces, a `name=value; ...` string or a
+/// Netscape file, and only needs the access-token cookie inside it.
+pub async fn rocketseat_set_cookies(
+    plugin: &crate::CoursesPlugin,
+    cookies_json: String,
+) -> Result<String, String> {
+    let parsed = omniget_core::core::cookie_parser::parse_cookie_input(&cookies_json, api::ACCESS_TOKEN_COOKIE);
+    tracing::info!(
+        "[rocketseat] set_cookies: cookie_count={}, token_len={}",
+        parsed.cookies.len(),
+        parsed.token.len()
+    );
+
+    let token = parsed
+        .cookies
+        .get(api::ACCESS_TOKEN_COOKIE)
+        .cloned()
+        .unwrap_or(parsed.token);
+
+    if token.is_empty() || token.len() < 10 {
+        return Err(format!(
+            "Cookie '{}' not found. Log in at app.rocketseat.com.br and capture the cookies again.",
+            api::ACCESS_TOKEN_COOKIE
+        ));
+    }
+
+    login_with_token(plugin, token).await
+}
+
+async fn login_with_token(
+    plugin: &crate::CoursesPlugin,
+    token: String,
+) -> Result<String, String> {
+    let _ = api::delete_saved_session().await;
+    plugin.rocketseat_session.lock().await.take();
+    *plugin.rocketseat_session_validated_at.lock().await = None;
+    *plugin.rocketseat_courses_cache.lock().await = None;
+
+    tracing::info!("[rocketseat] using token: {}...", &token[..token.len().min(30)]);
+
+    let session = api::create_session(&token)
         .map_err(|e| format!("Failed to create session: {}", e))?;
 
     match api::validate_token(&session).await {
@@ -62,7 +103,7 @@ pub async fn rocketseat_login_token(
             *plugin.rocketseat_session_validated_at.lock().await = Some(Instant::now());
             Ok("authenticated".to_string())
         }
-        Ok(false) => Err("Invalid token".to_string()),
+        Ok(false) => Err("Invalid or expired token. Log in again at app.rocketseat.com.br and copy a fresh one.".to_string()),
         Err(e) => Err(format!("Token validation failed: {}", e)),
     }
 }

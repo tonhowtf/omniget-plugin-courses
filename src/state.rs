@@ -23,3 +23,8 @@ pub struct RocketseatCoursesCache {
     pub courses: Vec<RocketseatCourse>,
     pub fetched_at: std::time::Instant,
 }
+
+pub struct MetaCoursesCache {
+    pub courses: Vec<crate::platforms::metaanalysis::api::MetaCourse>,
+    pub fetched_at: std::time::Instant,
+}

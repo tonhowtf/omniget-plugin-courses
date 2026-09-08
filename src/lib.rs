@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use omniget_plugin_sdk::{OmnigetPlugin, PluginHost};
-use crate::state::{CoursesCache, UdemyCoursesCache, KiwifyCoursesCache, RocketseatCoursesCache};
+use crate::state::{CoursesCache, UdemyCoursesCache, KiwifyCoursesCache, RocketseatCoursesCache, MetaCoursesCache};
 use crate::platforms::hotmart::auth::HotmartSession;
 use crate::platforms::udemy::auth::UdemySession;
 
@@ -37,6 +37,8 @@ struct PlatformCommands {
     cancel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    curriculum: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -87,6 +89,9 @@ pub struct CoursesPlugin {
     pub rocketseat_session: Arc<tokio::sync::Mutex<Option<crate::platforms::rocketseat::api::RocketseatSession>>>,
     pub rocketseat_courses_cache: Arc<tokio::sync::Mutex<Option<RocketseatCoursesCache>>>,
     pub rocketseat_session_validated_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
+    pub metaanalysis_session: Arc<tokio::sync::Mutex<Option<crate::platforms::metaanalysis::api::MetaSession>>>,
+    pub metaanalysis_courses_cache: Arc<tokio::sync::Mutex<Option<MetaCoursesCache>>>,
+    pub metaanalysis_session_validated_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl Clone for CoursesPlugin {
@@ -109,6 +114,9 @@ impl Clone for CoursesPlugin {
             rocketseat_session: self.rocketseat_session.clone(),
             rocketseat_courses_cache: self.rocketseat_courses_cache.clone(),
             rocketseat_session_validated_at: self.rocketseat_session_validated_at.clone(),
+            metaanalysis_session: self.metaanalysis_session.clone(),
+            metaanalysis_courses_cache: self.metaanalysis_courses_cache.clone(),
+            metaanalysis_session_validated_at: self.metaanalysis_session_validated_at.clone(),
         }
     }
 }
@@ -138,6 +146,9 @@ impl CoursesPlugin {
             rocketseat_session: Arc::new(tokio::sync::Mutex::new(None)),
             rocketseat_courses_cache: Arc::new(tokio::sync::Mutex::new(None)),
             rocketseat_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
+            metaanalysis_session: Arc::new(tokio::sync::Mutex::new(None)),
+            metaanalysis_courses_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            metaanalysis_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -147,17 +158,22 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
         PlatformUiConfig {
             id: "hotmart".into(), name: "Hotmart".into(), color: "#F04E23".into(), icon: "hotmart".into(),
             login_methods: vec![
+                // consumer.hotmart.com runs the OIDC login itself (email + code,
+                // password, Google/Apple) and keeps the session in web storage
+                // under `oidc.user:…`; the legacy hmVlcIntegration cookie is
+                // still accepted for older captures.
                 LoginMethod { method_type: "browser".into(), command: "hotmart_set_cookies".into(), extra_fields: vec![
-                    ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://sso.hotmart.com/login?redirect=https%3A%2F%2Fconsumer.hotmart.com".into(), field_type: "hidden".into() },
-                    ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".hotmart.com,.sso.hotmart.com,.consumer.hotmart.com,.api-sec-vlc.hotmart.com".into(), field_type: "hidden".into() },
+                    ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://consumer.hotmart.com/".into(), field_type: "hidden".into() },
+                    ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".hotmart.com,.sso.hotmart.com,.consumer.hotmart.com".into(), field_type: "hidden".into() },
                     ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "consumer.hotmart.com".into(), field_type: "hidden".into() },
-                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "hmVlcIntegration".into(), field_type: "hidden".into() },
+                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "oidc.user:*|hmVlcIntegration".into(), field_type: "hidden".into() },
                 ] },
+                LoginMethod { method_type: "cookies".into(), command: "hotmart_set_cookies".into(), extra_fields: vec![] },
             ],
             commands: PlatformCommands {
                 check_session: "hotmart_check_session".into(), logout: "hotmart_logout".into(),
                 list: "hotmart_list_courses".into(), refresh: "hotmart_refresh_courses".into(),
-                download: "start_course_download".into(), cancel: Some("cancel_course_download".into()), search: None,
+                download: "start_course_download".into(), cancel: Some("cancel_course_download".into()), search: None, curriculum: None,
             },
             features: PlatformFeatures {
                 captcha_event: Some("hotmart-auth-captcha".into()), has_search: None,
@@ -172,7 +188,8 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
                 LoginMethod { method_type: "browser".into(), command: "udemy_set_cookies".into(), extra_fields: vec![
                     ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://www.udemy.com/join/login-popup/".into(), field_type: "hidden".into() },
                     ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".udemy.com,www.udemy.com".into(), field_type: "hidden".into() },
-                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "udemy.com/home".into(), field_type: "hidden".into() },
+                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "udemy.com".into(), field_type: "hidden".into() },
+                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "access_token|dj_session_id|udemy_session".into(), field_type: "hidden".into() },
                 ] },
                 LoginMethod { method_type: "cookies".into(), command: "udemy_login_cookies".into(), extra_fields: vec![] },
             ],
@@ -180,6 +197,7 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
                 check_session: "udemy_check_session".into(), logout: "udemy_logout".into(),
                 list: "udemy_list_courses".into(), refresh: "udemy_refresh_courses".into(),
                 download: "start_udemy_course_download".into(), cancel: Some("cancel_udemy_course_download".into()), search: None,
+                curriculum: Some("udemy_get_curriculum".into()),
             },
             features: PlatformFeatures {
                 captcha_event: None, has_search: None,
@@ -197,7 +215,7 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
             commands: PlatformCommands {
                 check_session: "kiwify_check_session".into(), logout: "kiwify_logout".into(),
                 list: "kiwify_list_courses".into(), refresh: "kiwify_refresh_courses".into(),
-                download: "start_kiwify_course_download".into(), cancel: Some("cancel_kiwify_course_download".into()), search: None,
+                download: "start_kiwify_course_download".into(), cancel: Some("cancel_kiwify_course_download".into()), search: None, curriculum: None,
             },
             features: PlatformFeatures {
                 captcha_event: None, has_search: None,
@@ -209,19 +227,47 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
         PlatformUiConfig {
             id: "rocketseat".into(), name: "Rocketseat".into(), color: "#8257E5".into(), icon: "rocketseat".into(),
             login_methods: vec![
+                // app.rocketseat.com.br keeps the JWT in the
+                // `skylab_next_access_token_v4` cookie (not httpOnly), so the
+                // browser login and the Cookie Manager captures both work.
+                LoginMethod { method_type: "browser".into(), command: "rocketseat_set_cookies".into(), extra_fields: vec![
+                    ExtraField { key: "url".into(), label: "Login URL".into(), placeholder: "https://app.rocketseat.com.br/".into(), field_type: "hidden".into() },
+                    ExtraField { key: "cookie_domains".into(), label: "Cookie Domains".into(), placeholder: ".rocketseat.com.br,app.rocketseat.com.br".into(), field_type: "hidden".into() },
+                    ExtraField { key: "success_url".into(), label: "Success URL".into(), placeholder: "app.rocketseat.com.br".into(), field_type: "hidden".into() },
+                    ExtraField { key: "wait_for_cookie".into(), label: "Wait For Cookie".into(), placeholder: "skylab_next_access_token_v4".into(), field_type: "hidden".into() },
+                ] },
+                LoginMethod { method_type: "cookies".into(), command: "rocketseat_set_cookies".into(), extra_fields: vec![] },
                 LoginMethod { method_type: "token".into(), command: "rocketseat_login_token".into(), extra_fields: vec![] },
             ],
             commands: PlatformCommands {
                 check_session: "rocketseat_check_session".into(), logout: "rocketseat_logout".into(),
                 list: "rocketseat_list_courses".into(), refresh: "rocketseat_refresh_courses".into(),
                 download: "start_rocketseat_course_download".into(), cancel: None,
-                search: Some("rocketseat_search_courses".into()),
+                search: Some("rocketseat_search_courses".into()), curriculum: None,
             },
             features: PlatformFeatures {
                 captcha_event: None, has_search: Some(true),
                 download_arg_name: None, list_returns_key: None,
                 item_subtitle_field: Some("slug".into()),
                 session_display: Some("platform_name".into()), string_ids: Some(true),
+            },
+        },
+        PlatformUiConfig {
+            id: "metaanalysis".into(), name: "Meta-Analysis Academy".into(), color: "#4338CA".into(), icon: "metaanalysis".into(),
+            login_methods: vec![
+                // Supabase GoTrue email/password sign-in.
+                LoginMethod { method_type: "email_password".into(), command: "metaanalysis_login".into(), extra_fields: vec![] },
+            ],
+            commands: PlatformCommands {
+                check_session: "metaanalysis_check_session".into(), logout: "metaanalysis_logout".into(),
+                list: "metaanalysis_list_courses".into(), refresh: "metaanalysis_refresh_courses".into(),
+                download: "start_metaanalysis_course_download".into(), cancel: Some("cancel_metaanalysis_course_download".into()), search: None, curriculum: None,
+            },
+            features: PlatformFeatures {
+                captcha_event: None, has_search: None,
+                download_arg_name: None, list_returns_key: None,
+                item_subtitle_field: Some("delivery_name".into()),
+                session_display: None, string_ids: Some(true),
             },
         },
     ]
@@ -274,7 +320,10 @@ impl OmnigetPlugin for CoursesPlugin {
                 }
                 "hotmart_set_cookies" => {
                     let cookies_val = args.get("cookies").ok_or("missing 'cookies'")?;
-                    let cookies_json = serde_json::to_string(cookies_val).map_err(|e| e.to_string())?;
+                    let cookies_json = match cookies_val {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => serde_json::to_string(other).map_err(|e| e.to_string())?,
+                    };
                     let r = commands::auth::hotmart_set_cookies(&plugin, cookies_json).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
@@ -372,8 +421,17 @@ impl OmnigetPlugin for CoursesPlugin {
                         .or_else(|| args.get("chapter_filter"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let section_ids: Option<Vec<u64>> = match args.get("sectionIds").or_else(|| args.get("section_ids")) {
+                        Some(v) if !v.is_null() => Some(serde_json::from_value(v.clone()).map_err(|e| format!("invalid 'sectionIds': {}", e))?),
+                        _ => None,
+                    };
                     let host = plugin.host.clone().ok_or("not initialized")?;
-                    let r = commands::udemy_downloads::start_udemy_course_download(host, &plugin, course_json, output_dir, chapter_filter).await?;
+                    let r = commands::udemy_downloads::start_udemy_course_download(host, &plugin, course_json, output_dir, chapter_filter, section_ids).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "udemy_get_curriculum" => {
+                    let course_id: u64 = get_arg(&args, "courseId")?;
+                    let r = commands::udemy_downloads::udemy_get_curriculum(&plugin, course_id).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "cancel_udemy_course_download" => {
@@ -425,6 +483,15 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::rocketseat::rocketseat_login_token(&plugin, token).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
+                "rocketseat_set_cookies" => {
+                    let cookies_val = args.get("cookies").ok_or("missing 'cookies'")?;
+                    let cookies_json = match cookies_val {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => serde_json::to_string(other).map_err(|e| e.to_string())?,
+                    };
+                    let r = commands::rocketseat::rocketseat_set_cookies(&plugin, cookies_json).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
                 "rocketseat_check_session" => {
                     let r = commands::rocketseat::rocketseat_check_session(&plugin).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
@@ -451,6 +518,40 @@ impl OmnigetPlugin for CoursesPlugin {
                     let output_dir: String = get_arg(&args, "outputDir")?;
                     let host = plugin.host.clone().ok_or("not initialized")?;
                     let r = commands::rocketseat::start_rocketseat_course_download(host, &plugin, course_json, output_dir).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "metaanalysis_login" => {
+                    let email: String = get_arg(&args, "email")?;
+                    let password: String = get_arg(&args, "password")?;
+                    let r = commands::metaanalysis::metaanalysis_login(&plugin, email, password).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "metaanalysis_check_session" => {
+                    let r = commands::metaanalysis::metaanalysis_check_session(&plugin).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "metaanalysis_logout" => {
+                    let r = commands::metaanalysis::metaanalysis_logout(&plugin).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "metaanalysis_list_courses" => {
+                    let r = commands::metaanalysis::metaanalysis_list_courses(&plugin).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "metaanalysis_refresh_courses" => {
+                    let r = commands::metaanalysis::metaanalysis_refresh_courses(&plugin).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "start_metaanalysis_course_download" => {
+                    let course_json: String = get_arg(&args, "courseJson")?;
+                    let output_dir: String = get_arg(&args, "outputDir")?;
+                    let host = plugin.host.clone().ok_or("not initialized")?;
+                    let r = commands::metaanalysis::start_metaanalysis_course_download(host, &plugin, course_json, output_dir).await?;
+                    serde_json::to_value(r).map_err(|e| e.to_string())
+                }
+                "cancel_metaanalysis_course_download" => {
+                    let course_id: String = get_arg(&args, "courseId")?;
+                    let r = commands::metaanalysis::cancel_metaanalysis_course_download(&plugin, &course_id).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
                 "get_platforms" => {
@@ -494,6 +595,7 @@ impl OmnigetPlugin for CoursesPlugin {
             "udemy_refresh_courses".into(),
             "start_udemy_course_download".into(),
             "cancel_udemy_course_download".into(),
+            "udemy_get_curriculum".into(),
             "kiwify_login".into(),
             "kiwify_login_token".into(),
             "kiwify_check_session".into(),
@@ -503,12 +605,20 @@ impl OmnigetPlugin for CoursesPlugin {
             "start_kiwify_course_download".into(),
             "cancel_kiwify_course_download".into(),
             "rocketseat_login_token".into(),
+            "rocketseat_set_cookies".into(),
             "rocketseat_check_session".into(),
             "rocketseat_logout".into(),
             "rocketseat_list_courses".into(),
             "rocketseat_search_courses".into(),
             "rocketseat_refresh_courses".into(),
             "start_rocketseat_course_download".into(),
+            "metaanalysis_login".into(),
+            "metaanalysis_check_session".into(),
+            "metaanalysis_logout".into(),
+            "metaanalysis_list_courses".into(),
+            "metaanalysis_refresh_courses".into(),
+            "start_metaanalysis_course_download".into(),
+            "cancel_metaanalysis_course_download".into(),
             "get_platforms".into(),
             "get_platform_config".into(),
         ]
@@ -516,3 +626,35 @@ impl OmnigetPlugin for CoursesPlugin {
 }
 
 omniget_plugin_sdk::export_plugin!(CoursesPlugin::new());
+
+#[cfg(test)]
+mod platform_config_tests {
+    use super::*;
+
+    #[test]
+    fn every_advertised_command_is_registered() {
+        let plugin = CoursesPlugin::new();
+        let registered = plugin.commands();
+        for config in get_all_platform_configs() {
+            let mut referenced = vec![
+                config.commands.check_session.clone(),
+                config.commands.logout.clone(),
+                config.commands.list.clone(),
+                config.commands.refresh.clone(),
+                config.commands.download.clone(),
+            ];
+            referenced.extend(config.commands.cancel.iter().cloned());
+            referenced.extend(config.commands.search.iter().cloned());
+            referenced.extend(config.commands.curriculum.iter().cloned());
+            referenced.extend(config.login_methods.iter().map(|m| m.command.clone()));
+            for cmd in referenced {
+                assert!(
+                    registered.contains(&cmd),
+                    "platform '{}' advertises '{}' but commands() does not register it",
+                    config.id,
+                    cmd
+                );
+            }
+        }
+    }
+}

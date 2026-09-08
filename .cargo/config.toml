@@ -1,0 +1,8 @@
+# The host app links the MSVC runtime statically (see omniget/src-tauri/.cargo/config.toml).
+# A plugin DLL built against the dynamic runtime fails to load with os error 126
+# on machines without the VC++ redistributable (omniget#265), so match the host.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

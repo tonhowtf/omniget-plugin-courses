@@ -149,6 +149,9 @@ impl HotmartDownloader {
 
         std::fs::create_dir_all(output_dir)?;
 
+        let max_height =
+            crate::platforms::udemy::downloader::parse_quality_pref(&self.download_settings.video_quality);
+
         if lesson.has_media {
             let prefix = self.filename_prefix().to_string();
             let media_futures: Vec<_> = lesson.medias.iter().enumerate().map(|(i, media)| {
@@ -201,6 +204,7 @@ impl HotmartDownloader {
                             max_retries,
                             3,
                             Some(hls_client),
+                            max_height,
                         )
                         .await;
 
@@ -354,7 +358,7 @@ impl HotmartDownloader {
                                 .unwrap_or("")
                                 .to_string()
                                 + "com.br";
-                            match retry_hls_download(&m3u8_url, &out, &panda_referer, Some(bytes_tx.clone()), &cancel_token, max_concurrent_segments, max_retries, 3, Some(hls_client)).await {
+                            match retry_hls_download(&m3u8_url, &out, &panda_referer, Some(bytes_tx.clone()), &cancel_token, max_concurrent_segments, max_retries, 3, Some(hls_client), max_height).await {
                                 Ok(hls_result) => {
                                     let _ = write_done_manifest(&out, hls_result.file_size, hls_result.segments).await;
                                     paths.push(hls_result.path);
@@ -682,13 +686,14 @@ async fn retry_hls_download(
     max_retries: u32,
     max_attempts: u32,
     hls_client: Option<reqwest::Client>,
+    max_height: Option<u32>,
 ) -> anyhow::Result<omniget_core::core::hls_downloader::HlsDownloadResult> {
     let mut last_err = None;
     for attempt in 0..max_attempts {
         if cancel_token.is_cancelled() {
             anyhow::bail!("Download cancelled by user");
         }
-        match MediaProcessor::download_hls(
+        match MediaProcessor::download_hls_with_quality(
             m3u8_url,
             output_path,
             referer,
@@ -697,6 +702,7 @@ async fn retry_hls_download(
             max_concurrent_segments,
             max_retries,
             hls_client.clone(),
+            max_height,
         )
         .await
         {

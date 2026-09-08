@@ -15,6 +15,19 @@ struct UdemyDownloadCompleteEvent {
     success: bool,
     error: Option<String>,
     drm_skipped: u32,
+    videos_downloaded: u32,
+    videos_already_present: u32,
+    no_media: u32,
+    failed: u32,
+    lectures_processed: u32,
+    skipped: UdemySkippedLectures,
+}
+
+#[derive(Clone, Serialize, Default)]
+struct UdemySkippedLectures {
+    drm: Vec<String>,
+    no_media: Vec<String>,
+    failed: Vec<String>,
 }
 
 async fn fetch_curriculum_via_webview(
@@ -30,75 +43,29 @@ async fn fetch_curriculum_via_api(
     course_id: u64,
     portal_name: &str,
 ) -> Result<UdemyCurriculum, String> {
-    let client = {
+    let session = {
         let guard = plugin.udemy_session.lock().await;
-        let session = guard.as_ref().ok_or("not_authenticated")?;
-        session.client.clone()
+        guard.clone().ok_or("not_authenticated")?
     };
 
-    let url = format!(
-        "https://{}.udemy.com/api-2.0/courses/{}/subscriber-curriculum-items/?fields[lecture]=title,object_index,asset,supplementary_assets&fields[quiz]=title,object_index,type&fields[practice]=title,object_index&fields[chapter]=title,object_index&fields[asset]=title,filename,asset_type,status,is_external,media_license_token,course_is_drmed,media_sources,captions,stream_urls,download_urls,external_url,body&page_size=200",
-        portal_name, course_id
-    );
-
-    tracing::info!("[udemy-api] fetching curriculum via direct API for course {}", course_id);
-
-    let resp = client
-        .get(&url)
-        .send()
+    api::get_course_curriculum(&session, portal_name, course_id)
         .await
-        .map_err(|e| format!("API request failed: {}", e))?;
+        .map_err(|e| e.to_string())
+}
 
-    if !resp.status().is_success() {
-        return Err(format!("API returned status {}", resp.status()));
-    }
-
-    let body = resp.text().await.map_err(|e| format!("Read body failed: {}", e))?;
-
-    let mut data: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let mut all_results = data.get("results")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    loop {
-        let next_url = data.get("next").and_then(|n| n.as_str()).map(|s| s.to_string());
-        match next_url {
-            Some(next) if !next.is_empty() => {
-                tracing::info!("[udemy-api] fetching next curriculum page via direct API");
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-                let page_resp = client
-                    .get(&next)
-                    .send()
-                    .await
-                    .map_err(|e| format!("API page request failed: {}", e))?;
-
-                if !page_resp.status().is_success() {
-                    break;
-                }
-
-                let page_body = page_resp.text().await
-                    .map_err(|e| format!("Read page body failed: {}", e))?;
-
-                let page_data: serde_json::Value = serde_json::from_str(&page_body)
-                    .map_err(|e| format!("JSON parse error on page: {}", e))?;
-
-                if let Some(new_results) = page_data.get("results").and_then(|r| r.as_array()) {
-                    all_results.extend(new_results.iter().cloned());
-                }
-
-                data = page_data;
-            }
-            _ => break,
-        }
-    }
-
-    tracing::info!("[udemy-api] curriculum fetched via direct API: {} items total", all_results.len());
-
-    api::parse_curriculum(course_id, &all_results).map_err(|e| e.to_string())
+pub async fn udemy_get_curriculum(
+    plugin: &crate::CoursesPlugin,
+    course_id: u64,
+) -> Result<api::UdemyCurriculumSummary, String> {
+    let portal = {
+        let guard = plugin.udemy_session.lock().await;
+        guard
+            .as_ref()
+            .map(|s| s.portal_name.clone())
+            .unwrap_or_else(|| "www".into())
+    };
+    let curriculum = fetch_curriculum_via_api(plugin, course_id, &portal).await?;
+    Ok(api::summarize_curriculum(&curriculum))
 }
 
 
@@ -108,6 +75,7 @@ pub async fn start_udemy_course_download(
     course_json: String,
     output_dir: String,
     chapter_filter_raw: Option<String>,
+    section_ids: Option<Vec<u64>>,
 ) -> Result<String, String> {
     let course: UdemyCourse =
         serde_json::from_str(&course_json).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -166,6 +134,19 @@ pub async fn start_udemy_course_download(
         .as_deref()
         .map(crate::platforms::udemy::api::parse_chapter_filter)
         .unwrap_or_default();
+    let section_ids: std::collections::HashSet<u64> = section_ids
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    if !section_ids.is_empty() {
+        let known: Vec<u64> = curriculum.chapters.iter().map(|c| c.id).collect();
+        let unknown: Vec<u64> = section_ids.iter().copied().filter(|id| !known.contains(id)).collect();
+        if !unknown.is_empty() {
+            active.lock().await.remove(&course_id);
+            return Err(format!("unknown section ids for this course: {:?}", unknown));
+        }
+        tracing::info!("[udemy] downloading {} of {} sections", section_ids.len(), known.len());
+    }
 
     let download_captions = settings.download.download_subtitles;
     let caption_locale = settings.download.caption_locale.clone();
@@ -208,6 +189,7 @@ pub async fn start_udemy_course_download(
             target_quality,
             continuous_lecture_numbers,
             chapter_filter,
+            section_ids,
             download_captions,
             caption_locale,
             course_locale,
@@ -233,13 +215,26 @@ pub async fn start_udemy_course_download(
         }
 
         match result {
-            Ok(drm_skipped) => {
-                if drm_skipped > 0 {
+            Ok(summary) => {
+                if summary.drm_skipped > 0 {
                     let _ = host.emit_event("udemy-download-progress", serde_json::json!({
                         "courseId": course_id,
                         "type": "drm_warning",
-                        "drm_skipped": drm_skipped,
-                        "message": format!("{} lectures have DRM protection and were skipped", drm_skipped)
+                        "drm_skipped": summary.drm_skipped,
+                        "message": format!("{} lectures have DRM protection and were skipped", summary.drm_skipped)
+                    }));
+                }
+                if summary.no_media + summary.failed > 0 {
+                    let _ = host.emit_event("udemy-download-progress", serde_json::json!({
+                        "courseId": course_id,
+                        "type": "skipped_warning",
+                        "no_media": summary.no_media,
+                        "failed": summary.failed,
+                        "titles": summary.no_media_titles.iter().chain(summary.failed_titles.iter()).cloned().collect::<Vec<_>>(),
+                        "message": format!(
+                            "{} lectures had no downloadable media and {} failed",
+                            summary.no_media, summary.failed
+                        )
                     }));
                 }
                 let _ = host.emit_event(
@@ -247,7 +242,17 @@ pub async fn start_udemy_course_download(
                         course_name: course.title,
                         success: true,
                         error: None,
-                        drm_skipped,
+                        drm_skipped: summary.drm_skipped,
+                        videos_downloaded: summary.videos_downloaded,
+                        videos_already_present: summary.videos_already_present,
+                        no_media: summary.no_media,
+                        failed: summary.failed,
+                        lectures_processed: summary.lectures_processed,
+                        skipped: UdemySkippedLectures {
+                            drm: summary.drm_skipped_titles,
+                            no_media: summary.no_media_titles,
+                            failed: summary.failed_titles,
+                        },
                     },).unwrap_or_default());
             }
             Err(e) => {
@@ -258,6 +263,12 @@ pub async fn start_udemy_course_download(
                         success: false,
                         error: Some(e.to_string()),
                         drm_skipped: 0,
+                        videos_downloaded: 0,
+                        videos_already_present: 0,
+                        no_media: 0,
+                        failed: 0,
+                        lectures_processed: 0,
+                        skipped: UdemySkippedLectures::default(),
                     },).unwrap_or_default());
             }
         }

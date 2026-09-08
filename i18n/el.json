@@ -6,7 +6,23 @@
     "back": "Πίσω στα Μαθήματα",
     "coming_soon": "Σύντομα διαθέσιμο",
     "search_placeholder": "Αναζητηση πλατφορμων...",
-    "connection_failed": "Αποτυχια συνδεσης"
+    "connection_failed": "Αποτυχια συνδεσης",
+    "session_expired": "Session expired — sign in again",
+    "not_reachable": "Could not reach the platform",
+    "not_reachable_hint": "Check your connection or proxy, then try again. Signing in is still possible.",
+    "platform_hidden_hint": "Platforms the installed plugin does not support are hidden. Update it in the Marketplace to see more.",
+    "sections_choose": "Choose sections…",
+    "sections_title": "Choose what to download",
+    "sections_loading": "Loading the course outline…",
+    "sections_load_failed": "Could not load the course outline",
+    "sections_selected": "{{sections}} of {{total}} sections · {{lectures}} lectures",
+    "sections_select_all": "Select all",
+    "sections_select_none": "Clear selection",
+    "sections_lectures": "{{count}} lectures",
+    "sections_drm": "{{count}} DRM-protected, will be skipped",
+    "sections_none_selected": "Pick at least one section",
+    "sections_download": "Download {{count}} sections",
+    "sections_download_all": "Download whole course"
   },
   "hotmart": {
     "title": "Πλατφόρμα Hotmart",
@@ -36,7 +52,9 @@
     "choose_folder": "Επιλογή φακέλου μεταφορτώσεων",
     "refresh": "Ανανέωση",
     "unknown_error": "Άγνωστο σφάλμα",
-    "captcha_detected": "Ανιχνεύθηκε captcha — Παρακαλώ επιλύστε το στην σελίδα εισόδου."
+    "captcha_detected": "Ανιχνεύθηκε captcha — Παρακαλώ επιλύστε το στην σελίδα εισόδου.",
+    "external_platform_hint": "This course is delivered outside Hotmart Club, so OmniGet cannot download it from here. Open it on the creator's platform; if that platform is Udemy or Kiwify, sign in to it in Courses.",
+    "open_external": "Open on the platform"
   },
   "udemy": {
     "title": "Πλατφόρμα Udemy",

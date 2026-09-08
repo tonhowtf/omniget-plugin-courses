@@ -473,7 +473,11 @@ pub async fn authenticate_with_cookies_only(
     let has_session = cookies.iter().any(|c| c.name == "udemy_session");
     let has_dj = cookies.iter().any(|c| c.name == "dj_session_id");
     if !has_session && !has_dj {
-        return Err(anyhow!("Missing session cookies (udemy_session/dj_session_id)"));
+        let names: Vec<&str> = cookies.iter().map(|c| c.name.as_str()).collect();
+        tracing::warn!("[udemy] no session cookie among {:?}", names);
+        return Err(anyhow!(
+            "No Udemy session cookie was captured (access_token, udemy_session or dj_session_id). These are HttpOnly, so the login window must read them from the browser's cookie store; make sure OmniGet is up to date, or use the cookie-file login instead"
+        ));
     }
 
     let portal_name = if portal_hint.is_empty() { "www" } else { portal_hint };

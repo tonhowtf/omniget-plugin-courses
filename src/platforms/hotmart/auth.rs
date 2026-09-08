@@ -13,7 +13,11 @@ pub struct HotmartSession {
     pub token: String,
     pub email: String,
     pub client: reqwest::Client,
+    /// Cookies (and web-storage entries) captured at login. The SSO cookies
+    /// among them let the plugin mint a new OIDC token when this one expires.
     pub cookies: Vec<(String, String)>,
+    /// Unix time the OIDC access token expires, when known.
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +26,48 @@ pub struct SavedSession {
     pub email: String,
     pub cookies: Vec<(String, String)>,
     pub saved_at: u64,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+}
+
+impl HotmartSession {
+    pub fn from_saved(saved: SavedSession) -> anyhow::Result<Self> {
+        let client = build_client_from_saved(&saved)?;
+        Ok(Self {
+            token: saved.token,
+            email: saved.email,
+            client,
+            cookies: saved.cookies,
+            expires_at: saved.expires_at,
+        })
+    }
+
+    pub fn to_saved(&self) -> SavedSession {
+        SavedSession {
+            token: self.token.clone(),
+            email: self.email.clone(),
+            cookies: self.cookies.clone(),
+            saved_at: super::oidc::now_unix(),
+            expires_at: self.expires_at,
+        }
+    }
+
+    /// Replaces the bearer token (after a PKCE renewal), keeping the cookies.
+    pub fn with_token(&self, token: String, expires_at: Option<u64>) -> anyhow::Result<Self> {
+        let saved = SavedSession {
+            token,
+            email: self.email.clone(),
+            cookies: self.cookies.clone(),
+            saved_at: super::oidc::now_unix(),
+            expires_at,
+        };
+        Self::from_saved(saved)
+    }
+
+    /// True when the token is known to expire within the next minute.
+    pub fn is_expired(&self) -> bool {
+        matches!(self.expires_at, Some(at) if at <= super::oidc::now_unix() + 60)
+    }
 }
 
 fn session_file_path() -> anyhow::Result<PathBuf> {
@@ -41,6 +87,9 @@ pub fn build_client_from_saved(saved: &SavedSession) -> anyhow::Result<reqwest::
         "https://api-club-hot-club-api.cb.hotmart.com",
     ];
     for (name, value) in &saved.cookies {
+        if name.contains(':') {
+            continue;
+        }
         let cookie_str = format!("{}={}; Domain=.hotmart.com; Path=/", name, value);
         for domain in &domains {
             jar.add_cookie_str(&cookie_str, &domain.parse().unwrap());
@@ -85,15 +134,7 @@ pub async fn save_session(session: &HotmartSession) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let saved = SavedSession {
-        token: session.token.clone(),
-        email: session.email.clone(),
-        cookies: session.cookies.clone(),
-        saved_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    };
+    let saved = session.to_saved();
 
     let json = serde_json::to_string_pretty(&saved)?;
     std::fs::write(&path, json)?;
@@ -108,14 +149,7 @@ pub async fn load_saved_session() -> anyhow::Result<HotmartSession> {
 
     tracing::info!("[session] loaded for {}, {} cookies", saved.email, saved.cookies.len());
 
-    let client = build_client_from_saved(&saved)?;
-
-    Ok(HotmartSession {
-        token: saved.token,
-        email: saved.email,
-        cookies: saved.cookies,
-        client,
-    })
+    HotmartSession::from_saved(saved)
 }
 
 pub async fn delete_saved_session() -> anyhow::Result<()> {
@@ -244,24 +278,14 @@ pub async fn authenticate(
     let cookies = vec![("access_token".to_string(), token.clone())];
 
     let saved = SavedSession {
-        token: token.clone(),
+        token,
         email: email.to_string(),
-        cookies: cookies.clone(),
-        saved_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        cookies,
+        saved_at: super::oidc::now_unix(),
+        expires_at: None,
     };
-
-    let client = build_client_from_saved(&saved)
-        .map_err(|e| anyhow!("Failed to build session client: {}", e))?;
 
     tracing::info!("[hotmart] login successful for {}", email);
 
-    Ok(HotmartSession {
-        token,
-        email: email.to_string(),
-        client,
-        cookies,
-    })
+    HotmartSession::from_saved(saved).map_err(|e| anyhow!("Failed to build session client: {}", e))
 }

@@ -14,6 +14,80 @@ use super::api::{self, UdemyCourse};
 use super::auth::UdemySession;
 use super::vtt_to_srt::vtt_to_srt;
 
+const MAX_REPORTED_TITLES: usize = 50;
+const ZERO_TAIL_PROBE_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct UdemyDownloadSummary {
+    pub downloaded_bytes: u64,
+    pub lectures_processed: u32,
+    pub videos_downloaded: u32,
+    pub videos_already_present: u32,
+    pub drm_skipped: u32,
+    pub no_media: u32,
+    pub failed: u32,
+    pub drm_skipped_titles: Vec<String>,
+    pub no_media_titles: Vec<String>,
+    pub failed_titles: Vec<String>,
+}
+
+impl UdemyDownloadSummary {
+    fn record(&mut self, title: &str, outcome: &VideoOutcome) {
+        match outcome {
+            VideoOutcome::NotVideo => {}
+            VideoOutcome::Downloaded => self.videos_downloaded += 1,
+            VideoOutcome::AlreadyPresent => self.videos_already_present += 1,
+            VideoOutcome::Drm => {
+                self.drm_skipped += 1;
+                push_capped(&mut self.drm_skipped_titles, title.to_string());
+            }
+            VideoOutcome::NoMedia(reason) => {
+                self.no_media += 1;
+                push_capped(&mut self.no_media_titles, format!("{}: {}", title, reason));
+            }
+            VideoOutcome::Failed(reason) => {
+                self.failed += 1;
+                push_capped(&mut self.failed_titles, format!("{}: {}", title, reason));
+            }
+        }
+    }
+}
+
+fn push_capped(list: &mut Vec<String>, item: String) {
+    if list.len() < MAX_REPORTED_TITLES {
+        list.push(item);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum VideoOutcome {
+    NotVideo,
+    Downloaded,
+    AlreadyPresent,
+    Drm,
+    NoMedia(String),
+    Failed(String),
+}
+
+struct LectureOutcome {
+    bytes: u64,
+    video: VideoOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VideoSource {
+    pub url: String,
+    pub height: u32,
+    pub hls: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ResumePlan {
+    Fresh,
+    Append { offset: u64 },
+    AlreadyComplete,
+}
+
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0";
 const MAX_FILENAME_BYTES: usize = 200;
 
@@ -38,6 +112,7 @@ pub struct UdemyDownloader {
     target_quality: Option<u32>,
     continuous_lecture_numbers: bool,
     chapter_filter: HashSet<u32>,
+    section_ids: HashSet<u64>,
     download_captions: bool,
     caption_locale: String,
     course_locale: Option<String>,
@@ -140,6 +215,7 @@ impl UdemyDownloader {
         target_quality: Option<u32>,
         continuous_lecture_numbers: bool,
         chapter_filter: HashSet<u32>,
+        section_ids: HashSet<u64>,
         download_captions: bool,
         caption_locale: String,
         course_locale: Option<String>,
@@ -160,10 +236,15 @@ impl UdemyDownloader {
             target_quality,
             continuous_lecture_numbers,
             chapter_filter,
+            section_ids,
             download_captions,
             caption_locale,
             course_locale,
         }
+    }
+
+    fn chapter_selected(&self, index: u32, chapter_id: u64) -> bool {
+        api::chapter_selected(index, chapter_id, &self.chapter_filter, &self.section_ids)
     }
 
     pub async fn download_full_course(
@@ -173,7 +254,7 @@ impl UdemyDownloader {
         curriculum: api::UdemyCurriculum,
         progress_tx: mpsc::Sender<UdemyCourseDownloadProgress>,
         cancel_token: CancellationToken,
-    ) -> anyhow::Result<u32> {
+    ) -> anyhow::Result<UdemyDownloadSummary> {
         let session = {
             let guard = self.session.lock().await;
             guard.clone().ok_or_else(|| anyhow!("Not authenticated"))?
@@ -194,20 +275,16 @@ impl UdemyDownloader {
         let course_dir = PathBuf::from(output_dir).join(&course_dir_name);
         std::fs::create_dir_all(&course_dir)?;
 
-        let total_lectures: u32 = if self.chapter_filter.is_empty() {
-            curriculum.total_lectures
-        } else {
-            curriculum
-                .chapters
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| self.chapter_filter.contains(&((*idx + 1) as u32)))
-                .map(|(_, ch)| ch.lectures.len() as u32)
-                .sum()
-        };
+        let total_lectures: u32 = curriculum
+            .chapters
+            .iter()
+            .enumerate()
+            .filter(|(idx, ch)| self.chapter_selected((*idx + 1) as u32, ch.id))
+            .map(|(_, ch)| ch.lectures.iter().filter(|l| l.lecture_class == "lecture").count() as u32)
+            .sum();
         let mut completed_lectures: u32 = 0;
         let mut downloaded_bytes: u64 = 0;
-        let mut drm_skipped: u32 = 0;
+        let mut summary = UdemyDownloadSummary::default();
         let mut global_lecture_counter: u32 = 0;
 
         for (ch_idx, chapter) in curriculum.chapters.iter().enumerate() {
@@ -216,10 +293,10 @@ impl UdemyDownloader {
             }
 
             let chapter_number = (ch_idx + 1) as u32;
-            if !self.chapter_filter.is_empty() && !self.chapter_filter.contains(&chapter_number) {
+            if !self.chapter_selected(chapter_number, chapter.id) {
                 tracing::info!(
-                    "[udemy] skipping chapter {} '{}' (not in filter)",
-                    chapter_number, chapter.title
+                    "[udemy] skipping chapter {} '{}' (id {}, not selected)",
+                    chapter_number, chapter.title, chapter.id
                 );
                 continue;
             }
@@ -269,15 +346,16 @@ impl UdemyDownloader {
                 ).await;
 
                 match result {
-                    Ok((b, drm)) => {
-                        downloaded_bytes += b;
-                        drm_skipped += drm;
+                    Ok(outcome) => {
+                        downloaded_bytes += outcome.bytes;
+                        summary.record(&lecture.title, &outcome.video);
                     }
                     Err(e) => {
                         tracing::error!(
                             "[udemy] failed to download lecture '{}': {}",
                             lecture.title, e
                         );
+                        summary.record(&lecture.title, &VideoOutcome::Failed(e.to_string()));
                     }
                 }
 
@@ -309,12 +387,28 @@ impl UdemyDownloader {
             completed_lectures,
         }).await;
 
-        tracing::info!(
-            "[udemy] course '{}' download complete: {} lectures, {} bytes, {} drm-skipped",
-            course.title, completed_lectures, downloaded_bytes, drm_skipped
-        );
+        summary.downloaded_bytes = downloaded_bytes;
+        summary.lectures_processed = completed_lectures;
 
-        Ok(drm_skipped)
+        tracing::info!(
+            "[udemy] course '{}' done: {} lectures processed, {} videos downloaded, {} already present, {} drm, {} without media, {} failed, {} bytes",
+            course.title,
+            completed_lectures,
+            summary.videos_downloaded,
+            summary.videos_already_present,
+            summary.drm_skipped,
+            summary.no_media,
+            summary.failed,
+            downloaded_bytes
+        );
+        if !summary.no_media_titles.is_empty() {
+            tracing::warn!("[udemy] lectures without media: {:?}", summary.no_media_titles);
+        }
+        if !summary.failed_titles.is_empty() {
+            tracing::warn!("[udemy] lectures that failed: {:?}", summary.failed_titles);
+        }
+
+        Ok(summary)
     }
 
     async fn download_lecture(
@@ -325,7 +419,7 @@ impl UdemyDownloader {
         chapter_dir: &Path,
         cancel_token: &CancellationToken,
         lecture_num: u32,
-    ) -> anyhow::Result<(u64, u32)> {
+    ) -> anyhow::Result<LectureOutcome> {
         if lecture.lecture_class == "quiz" || lecture.lecture_class == "practice" {
             let quiz_file = chapter_dir.join(format!("{:02} - {} [quiz].json", lecture_num, safe_filename(&lecture.title)));
             if !file_exists_with_content(&quiz_file) {
@@ -336,30 +430,32 @@ impl UdemyDownloader {
                     }
                 }
             }
-            return Ok((0, 0));
+            return Ok(LectureOutcome { bytes: 0, video: VideoOutcome::NotVideo });
         }
 
         let asset = match &lecture.asset {
-            Some(a) => a,
-            None => return Ok((0, 0)),
+            Some(a) if !a.is_null() => a,
+            _ => {
+                tracing::warn!("[udemy] lecture '{}' has no asset in the curriculum", lecture.title);
+                return Ok(LectureOutcome {
+                    bytes: 0,
+                    video: VideoOutcome::NoMedia("curriculum item has no asset".into()),
+                });
+            }
         };
 
-        let asset_type = asset.get("asset_type")
-            .or_else(|| asset.get("assetType"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_lowercase();
+        let asset_type = api::asset_type_of(asset);
 
         let mut total_bytes: u64 = 0;
-        let mut drm_skipped: u32 = 0;
+        let mut video = VideoOutcome::NotVideo;
 
         match asset_type.as_str() {
             "video" => {
-                let (bytes, drm) = self.download_video_asset(
+                let (bytes, outcome) = self.download_video_asset(
                     session, course_id, lecture.id, asset, &lecture.title, chapter_dir, cancel_token, lecture_num
-                ).await?;
+                ).await;
                 total_bytes += bytes;
-                drm_skipped += drm;
+                video = outcome;
             }
             "article" => {
                 let body = asset.get("body").and_then(|v| v.as_str()).unwrap_or("");
@@ -382,9 +478,8 @@ impl UdemyDownloader {
                 ).await?;
             }
             _ => {
-                if !asset_type.is_empty() {
-                    tracing::warn!("[udemy] unknown asset type '{}' for '{}'", asset_type, lecture.title);
-                }
+                tracing::warn!("[udemy] unknown asset type '{}' for '{}'", asset_type, lecture.title);
+                video = VideoOutcome::NoMedia(format!("unsupported asset type '{}'", asset_type));
             }
         }
 
@@ -404,7 +499,7 @@ impl UdemyDownloader {
             }
         }
 
-        Ok((total_bytes, drm_skipped))
+        Ok(LectureOutcome { bytes: total_bytes, video })
     }
 
     async fn download_lecture_captions(
@@ -619,13 +714,13 @@ impl UdemyDownloader {
         chapter_dir: &Path,
         cancel_token: &CancellationToken,
         lecture_num: u32,
-    ) -> anyhow::Result<(u64, u32)> {
+    ) -> (u64, VideoOutcome) {
         let file_name = format!("{:02} - {}.mp4", lecture_num, safe_filename(title));
         let file_path = chapter_dir.join(&file_name);
 
         if file_exists_with_content(&file_path) {
             tracing::info!("[udemy] skipping existing video: {}", file_name);
-            return Ok((0, 0));
+            return (0, VideoOutcome::AlreadyPresent);
         }
 
         let refreshed = match api::get_fresh_lecture_asset(
@@ -642,216 +737,132 @@ impl UdemyDownloader {
         };
         let asset = refreshed.as_ref().unwrap_or(asset);
 
-        let has_license_token = asset.get("media_license_token")
+        let drm_signaled = asset.get("media_license_token")
             .map(|v| !v.is_null())
-            .unwrap_or(false);
-        let drm_signaled = has_license_token
+            .unwrap_or(false)
             || asset.get("course_is_drmed")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-        let stream_urls = asset.get("stream_urls");
-        if let Some(streams) = stream_urls {
-            if let Some(videos) = streams.get("Video").and_then(|v| v.as_array()) {
-                match self.download_from_stream_urls(
-                    session, videos, &file_path, title, cancel_token
-                ).await {
-                    Ok(bytes) => return Ok((bytes, 0)),
-                    Err(e) => return self.map_video_download_error(e, title, drm_signaled),
-                }
-            }
-        }
-
-        if let Some(sources) = asset.get("media_sources").and_then(|v| v.as_array()) {
-            let result = self.download_from_media_sources(
-                session, sources, &file_path, title, cancel_token
-            ).await;
-
-            match result {
-                Ok(bytes) if bytes > 0 => return Ok((bytes, 0)),
-                Ok(_) => {}
-                Err(e) => return self.map_video_download_error(e, title, drm_signaled),
-            }
-
-            if drm_signaled {
-                tracing::warn!(
-                    "[udemy] DRM-protected video skipped: '{}' (no downloadable sources available)",
-                    title
-                );
-                return Ok((0, 1));
-            }
-
-            tracing::warn!(
-                "[udemy] no usable video sources in media_sources for '{}' (types: {})",
-                title,
-                sources.iter()
-                    .filter_map(|s| s.get("type").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            return Ok((0, 0));
-        }
-
-        tracing::warn!("[udemy] no video sources found for '{}'", title);
-        Ok((0, 0))
-    }
-
-    fn map_video_download_error(
-        &self,
-        e: anyhow::Error,
-        title: &str,
-        drm_signaled: bool,
-    ) -> anyhow::Result<(u64, u32)> {
-        let msg = e.to_string();
-
-        if msg.contains("SAMPLE-AES") {
-            tracing::warn!("[udemy] DRM-protected (SAMPLE-AES) lecture skipped: '{}'", title);
-            return Ok((0, 1));
-        }
-
-        if msg.contains("403") {
-            if drm_signaled {
-                tracing::warn!("[udemy] DRM-protected lecture skipped (403 on protected media): '{}'", title);
-                return Ok((0, 1));
-            }
-            return Err(anyhow!(
-                "Access denied (403) downloading '{}': the media URL was rejected even after being refreshed — the account may lack access to this lecture or it is region-restricted (not DRM)",
-                title
-            ));
-        }
-
-        if drm_signaled {
-            tracing::warn!("[udemy] DRM-protected lecture skipped: '{}' ({})", title, msg);
-            return Ok((0, 1));
-        }
-
-        Err(e)
-    }
-
-    async fn download_from_stream_urls(
-        &self,
-        session: &UdemySession,
-        videos: &[serde_json::Value],
-        file_path: &Path,
-        title: &str,
-        cancel_token: &CancellationToken,
-    ) -> anyhow::Result<u64> {
-        let mut sources: Vec<(&str, u32)> = Vec::new();
-        for v in videos {
-            let label = v.get("label").and_then(|l| l.as_str()).unwrap_or("0");
-            let url = match v.get("file").and_then(|f| f.as_str()) {
-                Some(u) => u,
-                None => continue,
-            };
-            if label.to_lowercase() == "audio" {
-                continue;
-            }
-            let height: u32 = label.parse().unwrap_or(0);
-            sources.push((url, height));
-        }
-
+        let sources = collect_video_sources(asset);
         if sources.is_empty() {
-            tracing::warn!("[udemy] no valid video sources for '{}'", title);
-            return Ok(0);
-        }
-
-        let (best_url, best_height) = if let Some(target) = self.target_quality {
-            let chosen = sources
-                .iter()
-                .min_by_key(|(_, h)| (*h as i32 - target as i32).abs())
-                .copied()
-                .unwrap_or(sources[0]);
-            if (chosen.1 as i32 - target as i32).abs() > 200 {
-                tracing::info!(
-                    "[udemy] requested {}p, using closest available {}p for '{}'",
-                    target, chosen.1, title
-                );
+            let types: Vec<String> = asset.get("media_sources")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|m| m.get("type").and_then(|t| t.as_str())).map(|t| t.to_string()).collect())
+                .unwrap_or_default();
+            if drm_signaled {
+                tracing::warn!("[udemy] DRM-protected video skipped: '{}' (media types: {:?})", title, types);
+                return (0, VideoOutcome::Drm);
             }
-            chosen
-        } else {
-            sources.sort_by(|a, b| b.1.cmp(&a.1));
-            sources[0]
-        };
-
-        tracing::info!("[udemy] downloading '{}' at {}p", title, best_height);
-
-        let url_str = best_url.to_string();
-        let is_hls = url_str.contains(".m3u8");
-
-        if is_hls {
-            self.download_hls_and_remux(&url_str, file_path, title, cancel_token).await
-        } else {
-            let bytes = download_file_simple(&session.client, &url_str, file_path).await?;
-            tracing::info!("[udemy] direct download complete: {} ({}p, {} bytes)", title, best_height, bytes);
-            Ok(bytes)
-        }
-    }
-
-    async fn download_from_media_sources(
-        &self,
-        session: &UdemySession,
-        sources: &[serde_json::Value],
-        file_path: &Path,
-        title: &str,
-        cancel_token: &CancellationToken,
-    ) -> anyhow::Result<u64> {
-        let mut mp4_sources: Vec<(&str, u32)> = Vec::new();
-        let mut hls_source: Option<&str> = None;
-
-        for source in sources {
-            let src = match source.get("src").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => continue,
+            let keys: Vec<&str> = asset.as_object().map(|o| o.keys().map(|k| k.as_str()).collect()).unwrap_or_default();
+            tracing::warn!(
+                "[udemy] no video sources for '{}' (refreshed: {}, media types: {:?}, asset keys: {:?})",
+                title, refreshed.is_some(), types, keys
+            );
+            let reason = if types.is_empty() {
+                format!("no stream_urls/media_sources in asset (fields: {})", keys.join(","))
+            } else {
+                format!("only non-downloadable media types ({})", types.join(","))
             };
-            let media_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            return (0, VideoOutcome::NoMedia(reason));
+        }
 
-            match media_type {
-                "video/mp4" => {
-                    let label = source.get("label").and_then(|v| v.as_str()).unwrap_or("0");
-                    let height: u32 = label.parse().unwrap_or(0);
-                    mp4_sources.push((src, height));
-                }
-                "application/x-mpegURL" => {
-                    if hls_source.is_none() {
-                        hls_source = Some(src);
+        let direct = pick_direct(&sources, self.target_quality);
+        let hls = sources.iter().find(|s| s.hls).cloned();
+        let requested = self.target_quality
+            .map(|t| format!("{}p", t))
+            .unwrap_or_else(|| "best".to_string());
+
+        let mut hls_plan: Option<VideoSource> = None;
+        if let Some(hls_src) = hls {
+            if prefer_hls(direct.as_ref().map(|d| d.height), self.target_quality) {
+                match self.peek_hls_max_height(&hls_src.url).await {
+                    Some(max_h) => {
+                        let beats_direct = direct.as_ref().map(|d| max_h > d.height).unwrap_or(true);
+                        if beats_direct {
+                            tracing::info!(
+                                "[udemy] '{}': requested {}, using HLS (up to {}p) over direct mp4 ({})",
+                                title, requested, max_h,
+                                direct.as_ref().map(|d| format!("{}p", d.height)).unwrap_or_else(|| "none".into())
+                            );
+                            hls_plan = Some(hls_src);
+                        } else {
+                            tracing::info!(
+                                "[udemy] '{}': requested {}, HLS tops out at {}p, direct mp4 {}p is as good — using direct",
+                                title, requested, max_h,
+                                direct.as_ref().map(|d| d.height).unwrap_or(0)
+                            );
+                        }
+                    }
+                    None if direct.is_none() => hls_plan = Some(hls_src),
+                    None => {
+                        tracing::warn!(
+                            "[udemy] '{}': could not read HLS master playlist, falling back to direct mp4",
+                            title
+                        );
                     }
                 }
-                _ => {}
             }
         }
 
-        if !mp4_sources.is_empty() {
-            let (best_url, best_height) = if let Some(target) = self.target_quality {
-                let chosen = mp4_sources
-                    .iter()
-                    .min_by_key(|(_, h)| (*h as i32 - target as i32).abs())
-                    .copied()
-                    .unwrap_or(mp4_sources[0]);
-                if (chosen.1 as i32 - target as i32).abs() > 200 {
-                    tracing::info!(
-                        "[udemy] requested {}p, using closest available {}p for '{}'",
-                        target, chosen.1, title
+        if let Some(hls_src) = hls_plan {
+            match self.download_hls_and_remux(&hls_src.url, &file_path, title, cancel_token).await {
+                Ok(bytes) if bytes > 0 => return (bytes, VideoOutcome::Downloaded),
+                Ok(_) => {}
+                Err(e) => {
+                    let outcome = map_video_download_error(&e, title, drm_signaled);
+                    if outcome == VideoOutcome::Drm || direct.is_none() {
+                        return (0, outcome);
+                    }
+                    tracing::warn!(
+                        "[udemy] '{}': HLS download failed ({}), falling back to direct mp4",
+                        title, e
                     );
                 }
-                chosen
-            } else {
-                mp4_sources.sort_by(|a, b| b.1.cmp(&a.1));
-                mp4_sources[0]
-            };
-
-            tracing::info!("[udemy] downloading '{}' at {}p (via media_sources mp4)", title, best_height);
-
-            let bytes = download_file_simple(&session.client, best_url, file_path).await?;
-            tracing::info!("[udemy] direct download complete: {} ({}p, {} bytes)", title, best_height, bytes);
-            return Ok(bytes);
+            }
         }
 
-        if let Some(hls_url) = hls_source {
-            tracing::info!("[udemy] downloading '{}' via HLS (media_sources)", title);
-            return self.download_hls_and_remux(hls_url, file_path, title, cancel_token).await;
-        }
+        let direct = match direct {
+            Some(d) => d,
+            None => {
+                return (0, VideoOutcome::NoMedia("only an HLS stream is offered and it could not be downloaded".into()));
+            }
+        };
 
-        Ok(0)
+        if let Some(target) = self.target_quality {
+            if direct.height != target {
+                tracing::info!(
+                    "[udemy] '{}': requested {}p, closest direct mp4 is {}p (available: {:?})",
+                    title, target, direct.height,
+                    sources.iter().filter(|s| !s.hls).map(|s| s.height).collect::<Vec<_>>()
+                );
+            }
+        }
+        tracing::info!("[udemy] downloading '{}' at {}p (direct mp4)", title, direct.height);
+
+        match download_file_simple(&session.client, &direct.url, &file_path).await {
+            Ok(bytes) => {
+                tracing::info!("[udemy] direct download complete: {} ({}p, {} bytes)", title, direct.height, bytes);
+                (bytes, VideoOutcome::Downloaded)
+            }
+            Err(e) => (0, map_video_download_error(&e, title, drm_signaled)),
+        }
+    }
+
+    async fn peek_hls_max_height(&self, hls_url: &str) -> Option<u32> {
+        let resp = self.hls_client
+            .get(hls_url)
+            .header("Referer", "https://www.udemy.com/")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            tracing::warn!("[udemy] HLS master playlist returned {}", resp.status());
+            return None;
+        }
+        let text = resp.text().await.ok()?;
+        hls_max_height(&text)
     }
 
     async fn download_hls_and_remux(
@@ -865,7 +876,7 @@ impl UdemyDownloader {
         let output_str_ts = temp_ts_path.to_string_lossy().to_string();
         let output_str_mp4 = file_path.to_string_lossy().to_string();
 
-        let result = MediaProcessor::download_hls(
+        let result = MediaProcessor::download_hls_with_quality(
             hls_url,
             &output_str_ts,
             "https://www.udemy.com/",
@@ -874,6 +885,7 @@ impl UdemyDownloader {
             self.max_concurrent_segments,
             self.max_retries,
             Some(self.hls_client.clone()),
+            self.target_quality,
         ).await;
 
         match result {
@@ -1132,6 +1144,197 @@ fn file_exists_with_content(path: &Path) -> bool {
     }
 }
 
+fn map_video_download_error(e: &anyhow::Error, title: &str, drm_signaled: bool) -> VideoOutcome {
+    let msg = e.to_string();
+
+    if msg.contains("SAMPLE-AES") {
+        tracing::warn!("[udemy] DRM-protected (SAMPLE-AES) lecture skipped: '{}'", title);
+        return VideoOutcome::Drm;
+    }
+
+    if msg.contains("403") {
+        if drm_signaled {
+            tracing::warn!("[udemy] DRM-protected lecture skipped (403 on protected media): '{}'", title);
+            return VideoOutcome::Drm;
+        }
+        return VideoOutcome::Failed(format!(
+            "Access denied (403) downloading '{}': the media URL was rejected even after being refreshed — the account may lack access to this lecture or it is region-restricted (not DRM)",
+            title
+        ));
+    }
+
+    if drm_signaled {
+        tracing::warn!("[udemy] DRM-protected lecture skipped: '{}' ({})", title, msg);
+        return VideoOutcome::Drm;
+    }
+
+    VideoOutcome::Failed(msg)
+}
+
+fn is_hls_entry(url: &str, media_type: &str) -> bool {
+    media_type.eq_ignore_ascii_case("application/x-mpegURL")
+        || media_type.eq_ignore_ascii_case("application/vnd.apple.mpegurl")
+        || url.contains(".m3u8")
+}
+
+fn parse_height_label(label: &str) -> u32 {
+    let digits: String = label.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().unwrap_or(0)
+}
+
+pub(crate) fn collect_video_sources(asset: &serde_json::Value) -> Vec<VideoSource> {
+    let mut out: Vec<VideoSource> = Vec::new();
+    let mut push = |url: &str, height: u32, hls: bool| {
+        if url.is_empty() || out.iter().any(|s| s.url == url) {
+            return;
+        }
+        out.push(VideoSource { url: url.to_string(), height, hls });
+    };
+
+    if let Some(videos) = asset.get("stream_urls").and_then(|s| s.get("Video")).and_then(|v| v.as_array()) {
+        for v in videos {
+            let url = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
+            let label = v.get("label").and_then(|l| l.as_str()).unwrap_or("");
+            let media_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if label.eq_ignore_ascii_case("audio") {
+                continue;
+            }
+            let hls = is_hls_entry(url, media_type);
+            if !hls && !media_type.is_empty() && !media_type.eq_ignore_ascii_case("video/mp4") {
+                continue;
+            }
+            push(url, if hls { 0 } else { parse_height_label(label) }, hls);
+        }
+    }
+
+    if let Some(sources) = asset.get("media_sources").and_then(|v| v.as_array()) {
+        for source in sources {
+            let url = source.get("src").and_then(|v| v.as_str()).unwrap_or("");
+            let media_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let label = source.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            if media_type.eq_ignore_ascii_case("video/mp4") {
+                push(url, parse_height_label(label), false);
+            } else if is_hls_entry(url, media_type) {
+                push(url, 0, true);
+            }
+        }
+    }
+
+    out
+}
+
+pub(crate) fn pick_direct(sources: &[VideoSource], target: Option<u32>) -> Option<VideoSource> {
+    let direct: Vec<&VideoSource> = sources.iter().filter(|s| !s.hls).collect();
+    match target {
+        Some(t) => direct
+            .iter()
+            .min_by_key(|s| ((s.height as i64 - t as i64).abs(), s.height < t))
+            .map(|s| (*s).clone()),
+        None => direct.iter().max_by_key(|s| s.height).map(|s| (*s).clone()),
+    }
+}
+
+/// Udemy serves direct MP4 files up to 720p only; higher rungs live in the
+/// HLS ladder, so HLS is worth the extra work whenever the request is not
+/// already satisfied by a direct file.
+pub(crate) fn prefer_hls(best_direct_height: Option<u32>, target: Option<u32>) -> bool {
+    match (best_direct_height, target) {
+        (None, _) => true,
+        (Some(_), None) => true,
+        (Some(direct), Some(t)) => t > direct,
+    }
+}
+
+pub(crate) fn hls_max_height(master_text: &str) -> Option<u32> {
+    let (_, master) = m3u8_rs::parse_master_playlist(master_text.as_bytes()).ok()?;
+    master
+        .variants
+        .iter()
+        .filter(|v| !v.is_i_frame)
+        .filter_map(|v| v.resolution.as_ref().map(|r| r.height as u32))
+        .max()
+}
+
+pub(crate) fn parse_content_range(header: &str) -> Option<(Option<u64>, Option<u64>)> {
+    let rest = header.trim().strip_prefix("bytes")?.trim();
+    let (range, total) = rest.split_once('/')?;
+    let total = total.trim().parse::<u64>().ok();
+    let start = if range.trim() == "*" {
+        None
+    } else {
+        range.split_once('-').and_then(|(a, _)| a.trim().parse::<u64>().ok())
+    };
+    Some((start, total))
+}
+
+pub(crate) fn plan_resume(status: u16, existing: u64, content_range: Option<&str>) -> ResumePlan {
+    if existing == 0 {
+        return ResumePlan::Fresh;
+    }
+    match status {
+        206 => match content_range.and_then(parse_content_range) {
+            Some((Some(start), _)) if start == existing => ResumePlan::Append { offset: existing },
+            Some((Some(start), _)) => {
+                tracing::warn!("[udemy] server resumed at {} but part has {} bytes, restarting", start, existing);
+                ResumePlan::Fresh
+            }
+            _ => ResumePlan::Append { offset: existing },
+        },
+        416 => match content_range.and_then(parse_content_range) {
+            Some((_, Some(total))) if total == existing => ResumePlan::AlreadyComplete,
+            _ => ResumePlan::Fresh,
+        },
+        _ => ResumePlan::Fresh,
+    }
+}
+
+pub(crate) fn expected_total(
+    plan: ResumePlan,
+    content_length: Option<u64>,
+    content_range: Option<&str>,
+) -> Option<u64> {
+    match plan {
+        ResumePlan::Fresh => content_length,
+        ResumePlan::Append { offset } => content_range
+            .and_then(parse_content_range)
+            .and_then(|(_, total)| total)
+            .or_else(|| content_length.map(|len| offset + len)),
+        ResumePlan::AlreadyComplete => None,
+    }
+}
+
+/// After a power loss the file size may already be on disk while the last
+/// data blocks never were, leaving a zero-filled tail; resuming after it
+/// would splice zeros into the video.
+pub(crate) fn zero_tail_len(tail: &[u8]) -> usize {
+    tail.iter().rev().take_while(|b| **b == 0).count()
+}
+
+fn trim_zero_tail(part_path: &Path) -> anyhow::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let len = std::fs::metadata(part_path)?.len();
+    if len == 0 {
+        return Ok(0);
+    }
+    let probe = len.min(ZERO_TAIL_PROBE_BYTES);
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(part_path)?;
+    file.seek(SeekFrom::Start(len - probe))?;
+    let mut buf = vec![0u8; probe as usize];
+    file.read_exact(&mut buf)?;
+    let zeros = zero_tail_len(&buf) as u64;
+    if zeros == 0 {
+        return Ok(len);
+    }
+    let keep = len - zeros;
+    tracing::warn!(
+        "[udemy] partial file {} has a {}-byte zero tail, truncating to {} before resuming",
+        part_path.display(), zeros, keep
+    );
+    file.set_len(keep)?;
+    Ok(keep)
+}
+
 async fn download_file_simple(
     client: &reqwest::Client,
     url: &str,
@@ -1144,11 +1347,7 @@ async fn download_file_simple(
         )
     );
 
-    let result = download_file_inner(client, url, output_path, &part_path).await;
-    if result.is_err() {
-        let _ = std::fs::remove_file(&part_path);
-    }
-    result
+    download_file_inner(client, url, output_path, &part_path).await
 }
 
 async fn download_file_inner(
@@ -1157,14 +1356,23 @@ async fn download_file_inner(
     output_path: &Path,
     part_path: &Path,
 ) -> anyhow::Result<u64> {
-    let resp = client.get(url)
-        .timeout(Duration::from_secs(600))
+    let existing = match std::fs::metadata(part_path) {
+        Ok(m) if m.len() > 0 => trim_zero_tail(part_path).unwrap_or(0),
+        _ => 0,
+    };
+
+    let mut req = client.get(url).timeout(Duration::from_secs(600));
+    if existing > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={}-", existing));
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| anyhow!("Download request failed: {}", e))?;
 
     let status = resp.status();
-    if !status.is_success() {
+    if !status.is_success() && status != reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         if status == reqwest::StatusCode::FORBIDDEN {
             return Err(anyhow!("Access denied (403): the signed media URL was rejected (expired signature or restricted access)"));
         }
@@ -1174,20 +1382,216 @@ async fn download_file_inner(
         return Err(anyhow!("Download returned status {}", status));
     }
 
-    let mut total: u64 = 0;
-    let mut stream = resp.bytes_stream();
-    let mut file = std::fs::File::create(part_path)?;
+    let content_range = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let content_length = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
 
+    let plan = plan_resume(status.as_u16(), existing, content_range.as_deref());
+    let expected = expected_total(plan, content_length, content_range.as_deref());
+
+    let (mut file, mut total) = match plan {
+        ResumePlan::AlreadyComplete => {
+            tracing::info!("[udemy] partial file already complete ({} bytes), finalizing", existing);
+            std::fs::rename(part_path, output_path)?;
+            return Ok(existing);
+        }
+        ResumePlan::Append { offset } => {
+            tracing::info!("[udemy] resuming {} from byte {}", part_path.display(), offset);
+            (std::fs::OpenOptions::new().append(true).open(part_path)?, offset)
+        }
+        ResumePlan::Fresh => {
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                let _ = std::fs::remove_file(part_path);
+                return Err(anyhow!("Server rejected the resume range and the partial file was discarded; retry the download"));
+            }
+            if existing > 0 {
+                tracing::info!("[udemy] server ignored the Range request, restarting {} from scratch", part_path.display());
+            }
+            (std::fs::File::create(part_path)?, 0)
+        }
+    };
+
+    let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| anyhow!("Stream error: {}", e))?;
+        let chunk = chunk.map_err(|e| anyhow!("Stream error after {} bytes (partial file kept for resume): {}", total, e))?;
         std::io::Write::write_all(&mut file, &chunk)?;
         total += chunk.len() as u64;
     }
 
     std::io::Write::flush(&mut file)?;
+    file.sync_all()?;
     drop(file);
+
+    if let Some(expected) = expected {
+        if total < expected {
+            return Err(anyhow!(
+                "Download ended early: {} of {} bytes (partial file kept for resume)",
+                total, expected
+            ));
+        }
+        if total > expected {
+            let _ = std::fs::remove_file(part_path);
+            return Err(anyhow!(
+                "Download produced {} bytes but the server announced {}; partial file discarded",
+                total, expected
+            ));
+        }
+    }
 
     std::fs::rename(part_path, output_path)?;
 
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn src(url: &str, height: u32, hls: bool) -> VideoSource {
+        VideoSource { url: url.into(), height, hls }
+    }
+
+    #[test]
+    fn collect_sources_merges_both_shapes_and_flags_hls() {
+        let asset = json!({
+            "stream_urls": {"Video": [
+                {"label": "720", "file": "https://c/720.mp4", "type": "video/mp4"},
+                {"label": "Auto", "file": "https://c/master.m3u8?x", "type": "application/x-mpegURL"},
+                {"label": "audio", "file": "https://c/a.mp4"}
+            ]},
+            "media_sources": [
+                {"label": "480", "src": "https://c/480.mp4", "type": "video/mp4"},
+                {"label": "720", "src": "https://c/720.mp4", "type": "video/mp4"},
+                {"label": "auto", "src": "https://c/dash.mpd", "type": "application/dash+xml"}
+            ]
+        });
+        let sources = collect_video_sources(&asset);
+        assert_eq!(sources, vec![
+            src("https://c/720.mp4", 720, false),
+            src("https://c/master.m3u8?x", 0, true),
+            src("https://c/480.mp4", 480, false),
+        ]);
+    }
+
+    #[test]
+    fn empty_stream_urls_do_not_hide_media_sources() {
+        let asset = json!({
+            "stream_urls": {"Video": []},
+            "media_sources": [{"label": "720", "src": "https://c/720.mp4", "type": "video/mp4"}]
+        });
+        assert_eq!(collect_video_sources(&asset).len(), 1);
+    }
+
+    #[test]
+    fn pick_direct_closest_prefers_not_lower_on_ties() {
+        let sources = vec![src("a", 480, false), src("b", 720, false), src("h", 0, true)];
+        assert_eq!(pick_direct(&sources, Some(1080)).map(|s| s.height), Some(720));
+        assert_eq!(pick_direct(&sources, Some(600)).map(|s| s.height), Some(720));
+        assert_eq!(pick_direct(&sources, Some(360)).map(|s| s.height), Some(480));
+        assert_eq!(pick_direct(&sources, None).map(|s| s.height), Some(720));
+        assert_eq!(pick_direct(&[src("h", 0, true)], None), None);
+    }
+
+    #[test]
+    fn prefer_hls_only_when_direct_cannot_satisfy() {
+        assert!(prefer_hls(None, None));
+        assert!(prefer_hls(None, Some(480)));
+        assert!(prefer_hls(Some(720), None));
+        assert!(prefer_hls(Some(720), Some(1080)));
+        assert!(!prefer_hls(Some(720), Some(720)));
+        assert!(!prefer_hls(Some(720), Some(480)));
+    }
+
+    #[test]
+    fn hls_max_height_reads_master_ladder() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\n720.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080\n1080.m3u8\n";
+        assert_eq!(hls_max_height(master), Some(1080));
+        assert_eq!(hls_max_height("#EXTM3U\n#EXTINF:10,\nseg0.ts\n"), None);
+    }
+
+    #[test]
+    fn content_range_parsing() {
+        assert_eq!(parse_content_range("bytes 100-999/1000"), Some((Some(100), Some(1000))));
+        assert_eq!(parse_content_range("bytes */1000"), Some((None, Some(1000))));
+        assert_eq!(parse_content_range("bytes 0-9/*"), Some((Some(0), None)));
+        assert_eq!(parse_content_range("garbage"), None);
+    }
+
+    #[test]
+    fn resume_plan_decisions() {
+        assert_eq!(plan_resume(200, 0, None), ResumePlan::Fresh);
+        assert_eq!(plan_resume(206, 500, Some("bytes 500-999/1000")), ResumePlan::Append { offset: 500 });
+        assert_eq!(plan_resume(206, 500, None), ResumePlan::Append { offset: 500 });
+        assert_eq!(plan_resume(206, 500, Some("bytes 0-999/1000")), ResumePlan::Fresh);
+        assert_eq!(plan_resume(200, 500, None), ResumePlan::Fresh);
+        assert_eq!(plan_resume(416, 1000, Some("bytes */1000")), ResumePlan::AlreadyComplete);
+        assert_eq!(plan_resume(416, 1200, Some("bytes */1000")), ResumePlan::Fresh);
+        assert_eq!(plan_resume(416, 500, None), ResumePlan::Fresh);
+    }
+
+    #[test]
+    fn expected_total_accounts_for_offset() {
+        assert_eq!(expected_total(ResumePlan::Fresh, Some(1000), None), Some(1000));
+        assert_eq!(expected_total(ResumePlan::Append { offset: 500 }, Some(500), Some("bytes 500-999/1000")), Some(1000));
+        assert_eq!(expected_total(ResumePlan::Append { offset: 500 }, Some(500), None), Some(1000));
+        assert_eq!(expected_total(ResumePlan::Append { offset: 500 }, None, None), None);
+        assert_eq!(expected_total(ResumePlan::AlreadyComplete, Some(1), None), None);
+    }
+
+    #[test]
+    fn zero_tail_detection() {
+        assert_eq!(zero_tail_len(&[1, 2, 0, 0, 0]), 3);
+        assert_eq!(zero_tail_len(&[1, 2, 3]), 0);
+        assert_eq!(zero_tail_len(&[0, 0]), 2);
+        assert_eq!(zero_tail_len(&[]), 0);
+    }
+
+    #[test]
+    fn trim_zero_tail_truncates_file() {
+        let dir = std::env::temp_dir().join(format!("omniget-udemy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("lecture.mp4.part");
+        let mut data = vec![7u8; 1000];
+        data.extend(std::iter::repeat(0u8).take(300));
+        std::fs::write(&part, &data).unwrap();
+        assert_eq!(trim_zero_tail(&part).unwrap(), 1000);
+        assert_eq!(std::fs::metadata(&part).unwrap().len(), 1000);
+        assert_eq!(trim_zero_tail(&part).unwrap(), 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_records_outcomes_with_titles() {
+        let mut summary = UdemyDownloadSummary::default();
+        summary.record("A", &VideoOutcome::Downloaded);
+        summary.record("B", &VideoOutcome::AlreadyPresent);
+        summary.record("C", &VideoOutcome::Drm);
+        summary.record("D", &VideoOutcome::NoMedia("no sources".into()));
+        summary.record("E", &VideoOutcome::Failed("403".into()));
+        summary.record("F", &VideoOutcome::NotVideo);
+        assert_eq!(summary.videos_downloaded, 1);
+        assert_eq!(summary.videos_already_present, 1);
+        assert_eq!(summary.drm_skipped, 1);
+        assert_eq!(summary.no_media, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.drm_skipped_titles, vec!["C"]);
+        assert_eq!(summary.no_media_titles, vec!["D: no sources"]);
+        assert_eq!(summary.failed_titles, vec!["E: 403"]);
+    }
+
+    #[test]
+    fn quality_pref_parsing() {
+        assert_eq!(parse_quality_pref("best"), None);
+        assert_eq!(parse_quality_pref(""), None);
+        assert_eq!(parse_quality_pref("1080p"), Some(1080));
+        assert_eq!(parse_quality_pref("720"), Some(720));
+    }
 }
