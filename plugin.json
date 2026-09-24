@@ -3,7 +3,7 @@
   "name": "Course Downloader",
   "version": "1.1.0",
   "min_omniget_version": "0.5.0",
-  "description": "Download full courses from Hotmart, Udemy, Kiwify, Rocketseat and Meta-Analysis Academy.",
+  "description": "Download full courses from Hotmart, Udemy, Rocketseat and Meta-Analysis Academy.",
   "author": "tonhowtf",
   "license": "GPL-3.0",
   "homepage": "https://github.com/tonhowtf/omniget-plugin-courses",

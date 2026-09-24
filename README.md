@@ -1,10 +1,10 @@
 # OmniGet Course Downloader Plugin
 
-Download full courses from 35+ education platforms.
+Download full courses from 4 education platforms.
 
 ## Supported Platforms
 
-Hotmart, Udemy, Kiwify, Gumroad, Teachable, Kajabi, Skool, Pluralsight, MasterClass, Wondrium, Thinkific, Rocketseat, and 23+ more Brazilian platforms.
+Hotmart, Udemy, Rocketseat and Meta-Analysis Academy.
 
 ## Install
 

@@ -12,7 +12,7 @@ use omniget_core::core::filename;
 use super::api::{self, MetaCourse, MetaLesson, MetaSession};
 
 /// Progress payload — matches the shape the app's download listener expects
-/// (the same one Hotmart/Kiwify emit), so course downloads surface in the UI.
+/// (the same one Hotmart emits), so course downloads surface in the UI.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MetaCourseDownloadProgress {
     pub course_id: String,

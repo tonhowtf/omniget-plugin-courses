@@ -239,7 +239,7 @@ pub use course_list::ProductDetails;
 
 /// `purchase/products/{id}`: price, and the fields the list omits — the club
 /// slug and the `membership.registerAddress` that tells us when the content
-/// lives on another platform (MemberKit, Kiwify…).
+/// lives on another platform (MemberKit and others).
 pub async fn get_course_details(
     session: &HotmartSession,
     product_id: u64,

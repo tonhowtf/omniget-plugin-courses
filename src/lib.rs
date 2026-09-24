@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use omniget_plugin_sdk::{OmnigetPlugin, PluginHost};
-use crate::state::{CoursesCache, UdemyCoursesCache, KiwifyCoursesCache, RocketseatCoursesCache, MetaCoursesCache};
+use crate::state::{CoursesCache, UdemyCoursesCache, RocketseatCoursesCache, MetaCoursesCache};
 use crate::platforms::hotmart::auth::HotmartSession;
 use crate::platforms::udemy::auth::UdemySession;
 
@@ -83,9 +83,6 @@ pub struct CoursesPlugin {
     pub udemy_session_validated_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
     pub udemy_api_webview: Arc<tokio::sync::Mutex<Option<String>>>,
     pub udemy_api_result: Arc<std::sync::Mutex<Option<String>>>,
-    pub kiwify_session: Arc<tokio::sync::Mutex<Option<crate::platforms::kiwify::api::KiwifySession>>>,
-    pub kiwify_courses_cache: Arc<tokio::sync::Mutex<Option<KiwifyCoursesCache>>>,
-    pub kiwify_session_validated_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
     pub rocketseat_session: Arc<tokio::sync::Mutex<Option<crate::platforms::rocketseat::api::RocketseatSession>>>,
     pub rocketseat_courses_cache: Arc<tokio::sync::Mutex<Option<RocketseatCoursesCache>>>,
     pub rocketseat_session_validated_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
@@ -108,9 +105,6 @@ impl Clone for CoursesPlugin {
             udemy_session_validated_at: self.udemy_session_validated_at.clone(),
             udemy_api_webview: self.udemy_api_webview.clone(),
             udemy_api_result: self.udemy_api_result.clone(),
-            kiwify_session: self.kiwify_session.clone(),
-            kiwify_courses_cache: self.kiwify_courses_cache.clone(),
-            kiwify_session_validated_at: self.kiwify_session_validated_at.clone(),
             rocketseat_session: self.rocketseat_session.clone(),
             rocketseat_courses_cache: self.rocketseat_courses_cache.clone(),
             rocketseat_session_validated_at: self.rocketseat_session_validated_at.clone(),
@@ -140,9 +134,6 @@ impl CoursesPlugin {
             udemy_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
             udemy_api_webview: Arc::new(tokio::sync::Mutex::new(None)),
             udemy_api_result: Arc::new(std::sync::Mutex::new(None)),
-            kiwify_session: Arc::new(tokio::sync::Mutex::new(None)),
-            kiwify_courses_cache: Arc::new(tokio::sync::Mutex::new(None)),
-            kiwify_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
             rocketseat_session: Arc::new(tokio::sync::Mutex::new(None)),
             rocketseat_courses_cache: Arc::new(tokio::sync::Mutex::new(None)),
             rocketseat_session_validated_at: Arc::new(tokio::sync::Mutex::new(None)),
@@ -203,24 +194,6 @@ fn get_all_platform_configs() -> Vec<PlatformUiConfig> {
                 captcha_event: None, has_search: None,
                 download_arg_name: None, list_returns_key: None,
                 item_subtitle_field: Some("num_published_lectures".into()),
-                session_display: None, string_ids: None,
-            },
-        },
-        PlatformUiConfig {
-            id: "kiwify".into(), name: "Kiwify".into(), color: "#22C55E".into(), icon: "kiwify".into(),
-            login_methods: vec![
-                LoginMethod { method_type: "email_password".into(), command: "kiwify_login".into(), extra_fields: vec![] },
-                LoginMethod { method_type: "token".into(), command: "kiwify_login_token".into(), extra_fields: vec![] },
-            ],
-            commands: PlatformCommands {
-                check_session: "kiwify_check_session".into(), logout: "kiwify_logout".into(),
-                list: "kiwify_list_courses".into(), refresh: "kiwify_refresh_courses".into(),
-                download: "start_kiwify_course_download".into(), cancel: Some("cancel_kiwify_course_download".into()), search: None, curriculum: None,
-            },
-            features: PlatformFeatures {
-                captcha_event: None, has_search: None,
-                download_arg_name: None, list_returns_key: None,
-                item_subtitle_field: Some("seller".into()),
                 session_display: None, string_ids: None,
             },
         },
@@ -439,45 +412,6 @@ impl OmnigetPlugin for CoursesPlugin {
                     let r = commands::udemy_downloads::cancel_udemy_course_download(&plugin, course_id).await?;
                     serde_json::to_value(r).map_err(|e| e.to_string())
                 }
-                "kiwify_login" => {
-                    let email: String = get_arg(&args, "email")?;
-                    let password: String = get_arg(&args, "password")?;
-                    let r = commands::kiwify::kiwify_login(&plugin, email, password).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "kiwify_login_token" => {
-                    let token: String = get_arg(&args, "token")?;
-                    let r = commands::kiwify::kiwify_login_token(&plugin, token).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "kiwify_check_session" => {
-                    let r = commands::kiwify::kiwify_check_session(&plugin).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "kiwify_logout" => {
-                    let r = commands::kiwify::kiwify_logout(&plugin).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "kiwify_list_courses" => {
-                    let r = commands::kiwify::kiwify_list_courses(&plugin).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "kiwify_refresh_courses" => {
-                    let r = commands::kiwify::kiwify_refresh_courses(&plugin).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "start_kiwify_course_download" => {
-                    let course_json: String = get_arg(&args, "courseJson")?;
-                    let output_dir: String = get_arg(&args, "outputDir")?;
-                    let host = plugin.host.clone().ok_or("not initialized")?;
-                    let r = commands::kiwify::start_kiwify_course_download(host, &plugin, course_json, output_dir).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
-                "cancel_kiwify_course_download" => {
-                    let course_id: String = get_arg(&args, "courseId")?;
-                    let r = commands::kiwify::cancel_kiwify_course_download(&plugin, &course_id).await?;
-                    serde_json::to_value(r).map_err(|e| e.to_string())
-                }
                 "rocketseat_login_token" => {
                     let token: String = get_arg(&args, "token")?;
                     let r = commands::rocketseat::rocketseat_login_token(&plugin, token).await?;
@@ -596,14 +530,6 @@ impl OmnigetPlugin for CoursesPlugin {
             "start_udemy_course_download".into(),
             "cancel_udemy_course_download".into(),
             "udemy_get_curriculum".into(),
-            "kiwify_login".into(),
-            "kiwify_login_token".into(),
-            "kiwify_check_session".into(),
-            "kiwify_logout".into(),
-            "kiwify_list_courses".into(),
-            "kiwify_refresh_courses".into(),
-            "start_kiwify_course_download".into(),
-            "cancel_kiwify_course_download".into(),
             "rocketseat_login_token".into(),
             "rocketseat_set_cookies".into(),
             "rocketseat_check_session".into(),
